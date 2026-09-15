@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.38.0 (unreleased)
+## 0.37.1 (2026-09-15)
 
 ### Improvements
 - **Per-step message delivery for Matrix and Discord** — instead of waiting silently until a multi-step turn finishes, intermediate assistant messages emitted before tool calls are now sent immediately to Matrix rooms and Discord channels. Gives users immediate feedback during long turns with multiple tools, while keeping typing indicators active and delivering the final response upon turn completion.
