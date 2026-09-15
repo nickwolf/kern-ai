@@ -193,6 +193,30 @@ export class DiscordInterface implements Interface {
         sendTyping();
         const typingInterval = setInterval(sendTyping, 8000);
 
+        let currentText = "";
+        let isFirstReply = true;
+        let hasToolCalls = false;
+        let sendQueue = Promise.resolve();
+
+        const queueSend = (content: string) => {
+          sendQueue = sendQueue
+            .then(async () => {
+              const chunks = chunkMessage(content);
+              for (let i = 0; i < chunks.length; i++) {
+                if (isFirstReply && !isDM) {
+                  isFirstReply = false;
+                  await message.reply({ content: chunks[i], allowedMentions: { repliedUser: false } });
+                } else {
+                  await (message.channel as any).send({ content: chunks[i] });
+                }
+              }
+            })
+            .catch((err) => {
+              log.error("discord", `failed to send message: ${err?.message || err}`);
+            });
+          return sendQueue;
+        };
+
         try {
           const response = await onMessage(
             {
@@ -203,22 +227,28 @@ export class DiscordInterface implements Interface {
               channel: channelLabel,
               attachments: attachments.length > 0 ? attachments : undefined,
             },
-            () => {},
+            async (event) => {
+              if (event.type === "text-delta") {
+                currentText += event.text || "";
+              } else if (event.type === "tool-call") {
+                hasToolCalls = true;
+                const intermediate = currentText.trim();
+                currentText = "";
+                if (intermediate && !isNoReply(intermediate)) {
+                  queueSend(intermediate);
+                  sendTyping();
+                }
+              }
+            },
           );
 
           clearInterval(typingInterval);
 
-          const reply = (response || "").trim();
-          if (isNoReply(reply)) return;
-
-          const chunks = chunkMessage(reply);
-          for (let i = 0; i < chunks.length; i++) {
-            if (i === 0 && !isDM) {
-              await message.reply({ content: chunks[i], allowedMentions: { repliedUser: false } });
-            } else {
-              await (message.channel as any).send({ content: chunks[i] });
-            }
+          const remaining = currentText.trim() || (!hasToolCalls ? (response || "").trim() : "");
+          if (remaining && !isNoReply(remaining)) {
+            queueSend(remaining);
           }
+          await sendQueue;
         } catch (err: any) {
           clearInterval(typingInterval);
           const reason = String(err?.message || err || "Error processing message.");

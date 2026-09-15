@@ -241,6 +241,19 @@ export class MatrixInterface implements Interface {
     }, 3000);
     await this.setTyping(roomId, true).catch(() => {});
 
+    let currentText = "";
+    let hasToolCalls = false;
+    let sendQueue = Promise.resolve();
+
+    const queueSend = (content: string) => {
+      sendQueue = sendQueue
+        .then(() => this.sendMessage(roomId, content))
+        .catch((err) => {
+          log.error("matrix", `failed to send message in ${roomId}: ${err?.message || err}`);
+        });
+      return sendQueue;
+    };
+
     try {
       const response = await onMessage(
         {
@@ -251,16 +264,30 @@ export class MatrixInterface implements Interface {
           channel: `matrix:${roomId}`,
           attachments: attachments.length > 0 ? attachments : undefined,
         },
-        // Ignore stream events for MVP — reply with final text only
-        () => {},
+        async (event) => {
+          if (event.type === "text-delta") {
+            currentText += event.text || "";
+          } else if (event.type === "tool-call") {
+            hasToolCalls = true;
+            const intermediate = currentText.trim();
+            currentText = "";
+            if (intermediate && !isNoReply(intermediate)) {
+              queueSend(intermediate);
+              this.setTyping(roomId, true).catch(() => {});
+            }
+          }
+        },
       );
 
       clearInterval(typingInterval);
       await this.setTyping(roomId, false).catch(() => {});
 
-      const reply = (response || "").trim();
-      if (isNoReply(reply)) return;
-      await this.sendMessage(roomId, reply);
+      // Send any remaining or final response text
+      const remaining = currentText.trim() || (!hasToolCalls ? (response || "").trim() : "");
+      if (remaining && !isNoReply(remaining)) {
+        queueSend(remaining);
+      }
+      await sendQueue;
     } catch (err: any) {
       clearInterval(typingInterval);
       await this.setTyping(roomId, false).catch(() => {});
