@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.37.2 (unreleased)
+## 0.38.0 (2026-09-16)
 
 ### Features
 - **Matrix voice replies and MSC3245 audio messaging** — replies to voice messages with synthesized speech voice notes (`m.audio`) using the speech synthesis pipeline (`synthesizeSpeech`), matching Telegram and Slack behavior. Voice notes are uploaded via Matrix media endpoints (`/_matrix/media/v3/upload`) and tagged with `org.matrix.msc3245.voice` so Matrix clients render inline waveform audio players.
