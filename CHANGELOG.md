@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.39.0 (2026-09-17)
 
 ### Fixes
 - **Conversation summaries no longer duplicate or overlap** ([#364](https://github.com/oguzbilgic/kern-ai/issues/364)). Switching providers (e.g. OpenRouter ↔ Ollama) changed the embedding dimension, which reset the segmentation cursor and re-summarized the whole session alongside the existing summaries. Agents then received both copies in their context — up to 40–85% redundant summary tokens on affected agents, enough to overflow small local context windows. Now: an embedding change only rebuilds the vector index; new segments that overlap existing coverage are rejected (logged); higher-level summaries are built only from adjacent segments, so a late straggler can no longer produce a parent spanning months of history; and anything still overlapping in an older DB is deduplicated before injection (logged). Run `kern scripts segment-health` to check an agent, `segment-prune` to clean up existing overlaps.
 
-### Features
+### Improvements
 - **`kern scripts segment-health <recall.db>`** — read-only analyzer for the semantic summary tree. Per level: segment counts, orphans, stragglers, overlaps (with shadowed and 1-msg fencepost overlaps classified separately), gaps, coverage, and redundant tokens. Lists overlaps/gaps/stragglers/parent-child inconsistencies (truncated at `--limit`, default 10), then simulates the agent's actual `composeHistory()` selection with its real budget to report injected tokens and % waste from overlapping summaries. Health score with a printed breakdown. `--json` for snapshots. Motivated by finding 1,938 overlapping segments on one agent and 42% redundant summary tokens on another; the fix comes separately.
 - **`kern scripts segment-prune <recall.db>`** ([#365](https://github.com/oguzbilgic/kern-ai/issues/365)) — deterministic recovery for summary trees with overlapping segments. Per level, bottom-up: validate parents against their surviving children (delete on a hole or range mismatch, detach the children), then pick the min-cost chain of segments covering the level (L0: gaps outrank overlaps; L1+: overlaps outrank gaps; ties → summarized, has parent, oldest) and delete everything off the chain. Pure selection, zero LLM calls; upper levels regrow via the normal rollup. Dry-run by default, `--apply` writes in one transaction after copying `recall.db` aside. Prints the plan grouped by reason plus before/after health. On six fleet DBs: 3→90, 21→100, 45→90, 77→90, 98→100, 100→100, zero overlaps left.
 - **`selectHistorySegments()`** — the selection step of `composeHistory()` extracted as a pure exported function so offline tools reproduce injection exactly. No behavior change.
