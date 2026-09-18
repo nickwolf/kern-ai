@@ -56,17 +56,45 @@ async function handleSlashCommand(cmd: string, userId: string, iface: string, ag
       return formatStatus(getStatusDataFn());
     }
 
+    case "/plugins": {
+      if (!_pluginCtx) return "```yaml\nplugins: {}\n```";
+      const status = plugins.collectStatus(_pluginCtx);
+      const lines = ["```yaml", "plugins:"];
+      for (const [name, val] of Object.entries(status)) {
+        if (typeof val === "object" && val !== null) {
+          lines.push(`  ${name}:`);
+          for (const [subKey, subVal] of Object.entries(val)) {
+            const formatted = typeof subVal === "string" ? subVal : JSON.stringify(subVal);
+            lines.push(`    ${subKey}: ${formatted}`);
+          }
+        } else {
+          const formatted = typeof val === "string" ? val : JSON.stringify(val);
+          lines.push(`  ${name}: ${formatted}`);
+        }
+      }
+      lines.push("```");
+      return lines.join("\n");
+    }
+
     case "/help": {
-      const builtins = [
-        "/status   — show agent status, uptime, token usage",
-        "/restart  — restart the agent process",
-      ];
+      const cmds: Record<string, string> = {
+        status: "show agent status, uptime, token usage",
+        plugins: "show detailed plugin status and metrics",
+        restart: "restart the agent process",
+      };
       const pluginCmds = plugins.collectCommandDescriptions();
       for (const [cmd, desc] of Object.entries(pluginCmds)) {
-        builtins.push(`${cmd.padEnd(10)} — ${desc}`);
+        const cleanCmd = cmd.replace(/^\//, "");
+        cmds[cleanCmd] = desc;
       }
-      builtins.push("/help     — show this help");
-      return builtins.join("\n");
+      cmds["help"] = "show this help";
+
+      const lines = ["```yaml", "commands:"];
+      for (const [name, desc] of Object.entries(cmds)) {
+        lines.push(`  ${name}: ${desc}`);
+      }
+      lines.push("```");
+      return lines.join("\n");
     }
 
     default: {
