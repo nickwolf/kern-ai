@@ -283,6 +283,28 @@ Then detail lists (truncated at `--limit`): overlaps with both `created_at` stam
 
 The unsegmented tail (messages after the last L0 end) is reported separately — it is pending, not a gap. Never writes to the DB.
 
+## kern scripts embed-health
+
+Offline diagnostic tool for the recall embedding index in `recall.db`. Read-only. Examines both conversation chunks (`chunks` / `vec_chunks`) and semantic segment embeddings (`semantic_segments` / `vec_segments`).
+
+```bash
+kern scripts embed-health .kern/recall.db                      # largest session
+kern scripts embed-health .kern/recall.db --list               # list sessions with msg & chunk counts
+kern scripts embed-health .kern/recall.db --session <id>       # specific session (prefix ok)
+kern scripts embed-health .kern/recall.db --limit 20           # show up to 20 blockers (default 10)
+kern scripts embed-health .kern/recall.db --json               # machine-readable, no truncation
+```
+
+Checks invariants across six dimensions:
+1. **Index progress & coverage** — message lag between raw `messages` and `index_state.last_indexed_msg`.
+2. **Chunk size distributions** — token and character percentiles (min, p50, p95, max, avg) and token buckets (<1k, 1k–4k, 4k–8k, >8k).
+3. **Batch blockers** — detects chunks >8192 tokens or >16k chars that trigger provider HTTP 400 rejection during embedding.
+4. **Surrogate pair integrity** — detects lone UTF-16 surrogates or `\uFFFD` lossy replacements that trigger provider `invalid_json` parse failures.
+5. **Vector table invariants** — verifies 1:1 synchronization between content tables and virtual vector tables (`orphanContent`, `ghostVectors`, and uniform vector dimension across rows).
+6. **Stalled tail identification** — pins the exact message index, role, character length, and preview of the item blocking the indexing pipeline.
+
+Outputs a 0–100 health score with itemized deductions (`lag`, `oversized_chunks`, `lone_surrogates`, `vector_invariants`, `stalled_pipeline`).
+
 ## kern scripts segment-prune
 
 Recovery for a summary tree that `segment-health` shows to be violating the tiling invariant — parallel tilings from a re-index, straggler rollups spanning siblings they never summarized, shadowed duplicates. Prune is pure selection: it decides which existing segments form the one true branch and deletes the rest. **Zero LLM calls.** Dry-run by default.

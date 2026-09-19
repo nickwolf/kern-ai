@@ -44,6 +44,7 @@ async function showHelp() {
   w(`    ${cyan("kern scripts")} ${dim("recover-session <recall.db>")}  rebuild a session from recall.db`);
   w(`    ${cyan("kern scripts")} ${dim("segment-health <recall.db>")}   analyze summary tree: overlaps, gaps, injected waste`);
   w(`    ${cyan("kern scripts")} ${dim("segment-prune <recall.db>")}    prune overlapping segments to one tiling per level (dry-run by default)`);
+  w(`    ${cyan("kern scripts")} ${dim("embed-health <recall.db>")}      analyze embedding coverage, vector health, batch blockers`);
   w(`    ${cyan("kern restore")} ${dim("<file>")}         restore agent from backup`);
   w(`    ${cyan("kern logs")} ${dim("[name] [-f] [-n 50] [--level warn]")}  show agent logs`);
   w(`    ${cyan("kern install")} ${dim("[name|--web|--proxy]")} install systemd services`);
@@ -291,11 +292,15 @@ async function main() {
     } else if (name === "segment-prune") {
       const { segmentPrune } = await import("./scripts/segment-prune.js");
       await segmentPrune(args.slice(2));
+    } else if (name === "embed-health") {
+      const { embedHealth } = await import("./scripts/embed-health.js");
+      await embedHealth(args.slice(2));
     } else {
       console.error("Usage:");
       console.error("  kern scripts recover-session <recall.db> [--list] [--session <id>]");
       console.error("  kern scripts segment-health <recall.db> [--session <id>] [--budget <tokens>] [--limit <n>] [--json]");
       console.error("  kern scripts segment-prune <recall.db> [--session <id>] [--budget <tokens>] [--apply] [--no-backup] [--limit <n>] [--json]");
+      console.error("  kern scripts embed-health <recall.db> [--session <id>] [--limit <n>] [--json] [--list]");
       process.exit(1);
     }
     return;
