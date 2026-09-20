@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.40.0 (unreleased)
+## 0.40.0 (2026-09-20)
 
 ### Features
 - **Activity narration and `/wyd` (and `!wyd`) chat command** ([#386](https://github.com/oguzbilgic/kern-ai/issues/386), [#388](https://github.com/oguzbilgic/kern-ai/issues/388)) — real-time progress narration across runtime events and interactive commands. When an agent reaches a step limit or idle timeout, it uses the summary model to emit a concise 1–2 sentence narrative (rendered as a blockquote) of what was achieved and what was in flight, instead of generic boilerplate. The `/wyd` (or `!wyd`) chat command allows operators to check what an agent is working on in real time (or confirms it is idle).
