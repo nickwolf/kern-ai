@@ -167,3 +167,36 @@ test("indexSession re-vectorizes existing chunks on dimension rebuild (#333)", a
   const vecRow = db.prepare("SELECT rowid FROM vec_chunks WHERE rowid = ?").get(42) as any;
   assert.equal(vecRow.rowid, 42);
 });
+
+test("indexSession serializes concurrent calls for the same session (#404)", async () => {
+  const instance = Object.create(RecallIndex.prototype);
+  Object.assign(instance, {
+    activeSessions: new Map(),
+  });
+
+  let running = 0;
+  let maxConcurrency = 0;
+  let totalCalls = 0;
+
+  instance.runIndexSession = async (sessionId: string) => {
+    totalCalls++;
+    running++;
+    maxConcurrency = Math.max(maxConcurrency, running);
+    await new Promise((r) => setTimeout(r, 20));
+    running--;
+    return 1;
+  };
+
+  // Launch two indexSession calls in parallel
+  const [res1, res2] = await Promise.all([
+    instance.indexSession("sess-concurrent"),
+    instance.indexSession("sess-concurrent"),
+  ]);
+
+  assert.equal(res1, 1);
+  assert.equal(res2, 1);
+  assert.equal(totalCalls, 2);
+  assert.equal(maxConcurrency, 1, "concurrent calls must execute strictly serialized");
+  assert.equal(instance.activeSessions.size, 0, "activeSessions map cleaned up");
+});
+
