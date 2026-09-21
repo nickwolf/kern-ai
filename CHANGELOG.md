@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.40.1 (2026-09-20)
 
 ### Fixes
 - **Recall session indexing concurrency serialization** ([#404](https://github.com/oguzbilgic/kern-ai/issues/404)) — serializes concurrent `RecallIndex.indexSession()` calls per session so startup background backfill and `onTurnFinish` triggers do not run overlapping embedding jobs, preventing duplicate chunk embeddings and reducing peak heap pressure on active sessions.
