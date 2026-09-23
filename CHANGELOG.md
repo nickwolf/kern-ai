@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.41.0 (2026-09-22)
 
 ### Features
 - **Background shell jobs with initiator-aware completion routing** ([#415](https://github.com/oguzbilgic/kern-ai/issues/415)) — `bash({ command, background: true })` starts a command detached and returns at once with a job ID and log path (`.kern/jobs/<id>/output.log`). When it finishes, its exit code and output tail arrive as a new turn stamped with the envelope of the conversation that started it, so the queue splices it into that turn if it is still active, keeps it out of other users' turns, or wakes the agent when idle — and the runtime delivers the agent's reply to the originating chat (Slack channel, Telegram chat, Matrix room, DM) without the `message` tool. New `jobs` tool (list, status, tail, kill) and `/jobs` chat command. Jobs finishing within two seconds return their output directly; running jobs are killed on shutdown.
