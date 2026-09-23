@@ -11,6 +11,14 @@ export interface QueuedMessage {
   userId: string;
   interface: string;
   channel: string;
+  /**
+   * Platform conversation ID (Telegram chat, Slack channel, Matrix room, ...).
+   * Distinct from `channel`, which is the human-readable label used in the
+   * envelope. Carried so async completions can reply to the originating chat.
+   */
+  chatId?: string;
+  /** Set on turns enqueued by announce() rather than an interface (job completions). */
+  isAnnounce?: boolean;
   resolve: (response: string) => void;
   reject: (error: Error) => void;
   onEvent?: (event: StreamEvent) => void;
