@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.42.0
 
 ### Features
 - **`remindEvery` for background jobs** — `bash({ command, background: true, remindEvery: 600 })` announces a one-line `[job:<id> still running, 20m] <cmd>` message to the originating conversation at that interval, routed like a completion, so the agent can tail and kill jobs that have stalled or are no longer needed. Opt-in per job with no default; reminders stop when the job ends and are never sent for jobs that finish inside the grace window. Shown in `jobs({ action: "status" })` and `/jobs`.
