@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { log } from "./log.js";
-import { getToolsForScope, type KernConfig } from "./config.js";
+import { getToolsForScope, SHELL_PLUGIN_TOOLS, type KernConfig, type ToolScope } from "./config.js";
 import type { SegmentIndex } from "./segments.js";
 import { CORE_SCOPE, type SessionScope } from "./turn-context.js";
 import { sessionInstructions, userMemoryDir, userMemoryRelPath } from "./user-memory.js";
@@ -18,7 +18,13 @@ function wrapTools(content: string): string {
 }
 
 // Build the system prompt from agent markdown files + runtime info.
-export async function loadSystemPrompt(agentDir: string, config: KernConfig, pluginToolDescriptions: Record<string, string> = {}, scope: SessionScope = CORE_SCOPE): Promise<string> {
+export async function loadSystemPrompt(
+  agentDir: string,
+  config: KernConfig,
+  pluginToolDescriptions: Record<string, string> = {},
+  scope: SessionScope = CORE_SCOPE,
+  toolScope: ToolScope = config.toolScope,
+): Promise<string> {
   const parts: string[] = [];
 
   // Load AGENTS.md (kernel)
@@ -68,7 +74,7 @@ export async function loadSystemPrompt(agentDir: string, config: KernConfig, plu
   }
 
   // Inject live runtime info
-  const tools = getToolsForScope(scope.kind === "user" && config.userToolScope ? config.userToolScope : config.toolScope);
+  const tools = getToolsForScope(toolScope);
   const toolDescriptions: Record<string, string> = {
     bash: "run shell commands",
     pwsh: "run PowerShell commands (Windows)",
@@ -86,7 +92,10 @@ export async function loadSystemPrompt(agentDir: string, config: KernConfig, plu
     ...pluginToolDescriptions,
   };
   // Plugin tools are always available — add them to the list
-  const allToolNames = [...tools, ...Object.keys(pluginToolDescriptions).filter(t => !tools.includes(t))];
+  // except shell tools outside the "full" scope (see turnToolScope)
+  const pluginToolNames = Object.keys(pluginToolDescriptions)
+    .filter(t => toolScope === "full" || !SHELL_PLUGIN_TOOLS.includes(t));
+  const allToolNames = [...tools, ...pluginToolNames.filter(t => !tools.includes(t))];
   const toolList = allToolNames.map(t => `- **${t}**: ${toolDescriptions[t] || t}`).join("\n");
 
   parts.push(wrapTools(toolList));

@@ -121,3 +121,32 @@ test("subagents: native Anthropic children do not inherit the parent's Responses
   });
   assert.equal(await registry.spawn("task", { origin: null }).promise, "ok");
 });
+
+test("subagents: per-user mode passes the spawning scope and hides other sessions' children", async () => {
+  const { setRegistry, spawnTool, subagentsTool } = await import("../src/plugins/subagents/tools.js");
+  let seen: RunOptions | null = null;
+  const agentDir = mkdtempSync(join(tmpdir(), "kern-subagents-"));
+  const registry = new SubAgentRegistry(agentDir, { ...config, sessionMode: "per-user" }, async (opts) => { seen = opts; return "secret result"; });
+  registry.setAnnouncer(() => {});
+  let current = { scope: { kind: "user", key: "slack:U1" } as const, sessionKey: "slack:U1" };
+  const ctx = {
+    agentDir,
+    config: { sessionMode: "per-user" },
+    scope: () => current.scope,
+    origin: () => ({ ...origin, sessionKey: current.sessionKey }),
+  } as any;
+  setRegistry(registry, ctx);
+  const opts = { toolCallId: "t", messages: [] };
+
+  const spawned = String(await spawnTool.execute!({ prompt: "look around" }, opts));
+  const id = spawned.match(/sa_[a-f0-9]+/)![0];
+  await registry.get(id)!.promise;
+  assert.deepEqual(seen!.scope, { kind: "user", key: "slack:U1" });
+  assert.match(String(await subagentsTool.execute!({ action: "list" }, opts)), new RegExp(id));
+  assert.equal(await subagentsTool.execute!({ action: "result", id }, opts), "secret result");
+
+  current = { scope: { kind: "user", key: "slack:U2" } as any, sessionKey: "slack:U2" };
+  assert.equal(await subagentsTool.execute!({ action: "list" }, opts), "No sub-agents.");
+  assert.match(String(await subagentsTool.execute!({ action: "result", id }, opts)), /not found/);
+  setRegistry(null, null);
+});

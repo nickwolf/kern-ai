@@ -5,6 +5,8 @@ import { existsSync } from "fs";
 import { log } from "../../log.js";
 import { createModel } from "../../model.js";
 import { allTools, type ToolName } from "../../tools/index.js";
+import { guardMemoryTools } from "../../user-memory.js";
+import { CORE_SCOPE, type SessionScope } from "../../turn-context.js";
 import type { KernConfig } from "../../config.js";
 
 /**
@@ -58,6 +60,8 @@ export interface RunOptions {
   signal: AbortSignal;
   onToolCall?: () => void;
   onUsage?: (inputTokens: number, outputTokens: number) => void;
+  /** Session that spawned the child. Per-user mode guards its tools to match. */
+  scope?: SessionScope;
 }
 
 /**
@@ -65,17 +69,21 @@ export interface RunOptions {
  * Returns the child's final text response on success.
  */
 export async function runSubAgent(opts: RunOptions): Promise<string> {
-  const { id, prompt, config, agentDir, maxSteps, signal, onToolCall, onUsage } = opts;
+  const { id, prompt, config, agentDir, maxSteps, signal, onToolCall, onUsage, scope } = opts;
 
   const subDir = join(agentDir, ".kern", "subagents", id);
   await mkdir(subDir, { recursive: true });
   await writeFile(join(subDir, "prompt.md"), prompt, "utf-8");
 
-  const tools: Record<string, any> = {};
+  let tools: Record<string, any> = {};
   for (const name of SUBAGENT_TOOLS) {
     if (name in allTools) {
       tools[name] = allTools[name as ToolName];
     }
+  }
+  // A child reads only what its parent session may read.
+  if (config.sessionMode === "per-user") {
+    tools = guardMemoryTools(tools, agentDir, scope ?? CORE_SCOPE);
   }
 
   const messages: ModelMessage[] = [{ role: "user", content: prompt }];

@@ -50,7 +50,9 @@ The main config file. Committed to git. Unknown top-level fields are warned on s
 | `maxConcurrentSessions` | `4` | Per-user mode: most sessions allowed to run a model turn at the same time. Others wait for a free slot. |
 | `userSessionIdleMinutes` | `60` | Per-user mode: unload a user session after this many idle minutes. It resumes from disk on the user's next message. `0` keeps sessions loaded. |
 | `userAliases` | `{}` | Per-user mode: map `"<interface>:<userId>"` to a shared key, e.g. `{"slack:U123": "nick", "telegram:456": "nick"}`, so one person's DMs on several platforms share a session. |
-| `userToolScope` | `""` | Per-user mode: tool scope for user sessions (`full`, `write`, `read`). Empty = same as `toolScope`. |
+| `userToolScope` | `""` | Per-user mode: tool scope for user sessions (`full`, `write`, `read`). Empty = `write` when `toolScope` is `full` (no shell), else `toolScope`. See [Sessions](sessions.md#who-can-reach-what). |
+| `groupToolScope` | `""` | Per-user mode: tool scope for core-session turns not started by the operator (group channels, heartbeats, inbox reviews). Same default as `userToolScope`. Operator turns (web UI, TUI, CLI) always use `toolScope`. |
+| `globalReviewOnPropose` | `false` | Per-user mode: wake the core session for a review turn as soon as a user session proposes a global memory change. |
 | `mcpServers` | `{}` | Model Context Protocol servers. Tools namespaced as `<server>__<tool>`. See [MCP](mcp.md). |
 
 ### Tool scopes

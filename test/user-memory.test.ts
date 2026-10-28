@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { configDefaults, type KernConfig } from "../src/config.js";
-import { canUserWrite, guardMemoryTools, isForeignPersonalMemory, sessionOwners, sessionInstructions, userDirName } from "../src/user-memory.js";
+import { canUserWrite, guardMemoryTools, isProtectedPath, restrictKernTool, sessionOwners, sessionInstructions, userDirName } from "../src/user-memory.js";
 import { recallAccess, parseEnvelopes, type Envelope } from "../src/plugins/recall/access.js";
 import { userIdentities } from "../src/session-router.js";
 import { SessionManager } from "../src/session.js";
@@ -45,13 +45,39 @@ test("canUserWrite: only the user's own memory inside the agent dir", () => {
   assert.equal(canUserWrite(agent, "slack:U1", "/tmp/report.txt"), true);
 });
 
-test("isForeignPersonalMemory: core sees no user's folder, users see only their own", () => {
+test("isProtectedPath: personal memory and runtime state", () => {
   const agent = "/agents/a";
-  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "users/slack_U1/KNOWLEDGE.md"), true);
-  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "knowledge/net.md"), false);
-  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "users"), false);
-  assert.equal(isForeignPersonalMemory(agent, user("slack:U1"), "users/slack_U1/notes/x.md"), false);
-  assert.equal(isForeignPersonalMemory(agent, user("slack:U1"), "/agents/a/users/slack_U2/KNOWLEDGE.md"), true);
+  assert.equal(isProtectedPath(agent, CORE_SCOPE, "users/slack_U1/KNOWLEDGE.md"), true);
+  assert.equal(isProtectedPath(agent, CORE_SCOPE, "knowledge/net.md"), false);
+  assert.equal(isProtectedPath(agent, CORE_SCOPE, "users"), false);
+  assert.equal(isProtectedPath(agent, user("slack:U1"), "users/slack_U1/notes/x.md"), false);
+  assert.equal(isProtectedPath(agent, user("slack:U1"), "/agents/a/users/slack_U2/KNOWLEDGE.md"), true);
+  // .kern/ holds every session's transcripts, recall index and logs.
+  for (const p of [".kern/sessions/abc.jsonl", ".kern/recall.db", ".kern/logs/kern.log", ".kern/subagents/sa_1/session.jsonl"]) {
+    assert.equal(isProtectedPath(agent, CORE_SCOPE, p), true, p);
+    assert.equal(isProtectedPath(agent, user("slack:U1"), p), true, p);
+  }
+  // Only the core reviews the inbox.
+  assert.equal(isProtectedPath(agent, CORE_SCOPE, ".kern/global-inbox/x.md"), false);
+  assert.equal(isProtectedPath(agent, user("slack:U1"), ".kern/global-inbox/x.md"), true);
+});
+
+test("guardMemoryTools: media tools and .kern searches are guarded", async () => {
+  const agent = "/agents/a";
+  const pdf = { execute: async (args: { file: string }) => `pdf ${args.file}` };
+  const grep = { execute: async () => "./KNOWLEDGE.md:1:x\n./.kern/sessions/abc.jsonl:3:x" };
+  const tools = guardMemoryTools({ pdf, grep }, agent, user("slack:U1"));
+  assert.match(await tools.pdf.execute({ file: "users/slack_U2/report.pdf" }, {}), /not accessible/);
+  assert.equal(await tools.pdf.execute({ file: "users/slack_U1/report.pdf" }, {}), "pdf users/slack_U1/report.pdf");
+  assert.equal(await tools.grep.execute({ pattern: "x" }, {}), "./KNOWLEDGE.md:1:x");
+});
+
+test("restrictKernTool: logs and pair are operator-only", async () => {
+  const kern = { execute: async (args: { action: string }) => `ran ${args.action}` };
+  const tools = restrictKernTool({ kern });
+  assert.equal(await tools.kern.execute({ action: "status" }, {}), "ran status");
+  assert.match(await tools.kern.execute({ action: "logs" }, {}), /only available to the operator/);
+  assert.match(await tools.kern.execute({ action: "pair" }, {}), /only available to the operator/);
 });
 
 test("guardMemoryTools: user session writes only its own memory", async () => {
@@ -59,7 +85,7 @@ test("guardMemoryTools: user session writes only its own memory", async () => {
   const write = { description: "w", execute: async (args: { path: string }) => { calls.push(args.path); return "ok"; } };
   const tools = guardMemoryTools({ write }, "/agents/a", user("slack:U1"));
   assert.match(await tools.write.execute({ path: "KNOWLEDGE.md" }, {}), /global memory/);
-  assert.match(await tools.write.execute({ path: "users/slack_U2/KNOWLEDGE.md" }, {}), /another user/);
+  assert.match(await tools.write.execute({ path: "users/slack_U2/KNOWLEDGE.md" }, {}), /not accessible/);
   assert.equal(await tools.write.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), "ok");
   assert.deepEqual(calls, ["users/slack_U1/KNOWLEDGE.md"]);
 });
@@ -71,11 +97,11 @@ test("guardMemoryTools: reads and searches hide other users' memory", async () =
   const grep = { execute: async () => ["./KNOWLEDGE.md:1:green", "\x1b[35m./users/slack_U2/KNOWLEDGE.md\x1b[0m:1:green"].join("\n") };
 
   const core = guardMemoryTools({ read, glob, grep }, agent, CORE_SCOPE);
-  assert.match(await core.read.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), /personal memory/);
+  assert.match(await core.read.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), /not accessible/);
   assert.equal(await core.read.execute({ path: "KNOWLEDGE.md" }, {}), "content of KNOWLEDGE.md");
   assert.equal(await core.glob.execute({ pattern: "**/*.md" }, {}), `${agent}/knowledge/net.md`);
   assert.equal(await core.grep.execute({ pattern: "green" }, {}), "./KNOWLEDGE.md:1:green");
-  assert.match(await core.grep.execute({ pattern: "green", path: "users/slack_U1" }, {}), /personal memory/);
+  assert.match(await core.grep.execute({ pattern: "green", path: "users/slack_U1" }, {}), /not accessible/);
 
   const u1 = guardMemoryTools({ read, glob }, agent, user("slack:U1"));
   assert.equal(await u1.read.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), "content of users/slack_U1/KNOWLEDGE.md");
@@ -206,6 +232,77 @@ test("global-memory plugin: only enabled in per-user mode, inbox shown to core o
 
     // The core session edits global memory directly.
     assert.match(String(await proposeGlobalTool.execute!({ target: "x", change: "y", rationale: "z" }, { toolCallId: "t", messages: [] })), /core session/);
+    await globalMemoryPlugin.onShutdown!(ctx);
+  });
+});
+
+test("turnToolScope: only the operator keeps the shell in per-user mode", async () => {
+  const { turnToolScope } = await import("../src/config.js");
+  const full = { ...perUser, toolScope: "full" as const };
+  assert.equal(turnToolScope({ ...configDefaults, toolScope: "full" }, user("slack:U1"), "slack"), "full", "shared mode unchanged");
+  assert.equal(turnToolScope(full, CORE_SCOPE, "web"), "full");
+  assert.equal(turnToolScope(full, CORE_SCOPE, "tui"), "full");
+  assert.equal(turnToolScope(full, CORE_SCOPE, "slack"), "write", "group channel");
+  assert.equal(turnToolScope(full, CORE_SCOPE, "system"), "write", "heartbeat / review");
+  assert.equal(turnToolScope(full, user("slack:U1"), "slack"), "write");
+  assert.equal(turnToolScope({ ...full, userToolScope: "full", groupToolScope: "read" }, user("slack:U1"), "slack"), "full");
+  assert.equal(turnToolScope({ ...full, groupToolScope: "read" }, CORE_SCOPE, "slack"), "read");
+  assert.equal(turnToolScope({ ...perUser, toolScope: "read" }, user("slack:U1"), "slack"), "read");
+});
+
+test("global-memory: group turns don't see the inbox; resolve_proposal archives and commits", async () => {
+  const { execFileSync } = await import("child_process");
+  const { readFile: read, readdir } = await import("fs/promises");
+  const { resolveProposalTool, commitMemoryTool } = await import("../src/plugins/global-memory/plugin.js");
+  await withAgentDir(async (dir) => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" });
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    await writeFile(join(dir, "KNOWLEDGE.md"), "index\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+
+    let scope: SessionScope = CORE_SCOPE;
+    let iface = "slack";
+    const ctx = {
+      agentDir: dir, config: perUser, sessionId: () => "s",
+      scope: () => scope, origin: () => ({ interface: iface, channel: "#general", userId: "U9" }),
+      announce: async () => "NO_REPLY",
+    } as unknown as PluginContext;
+    await globalMemoryPlugin.onStartup!(ctx);
+    await writeProposal(dir, { from: "slack:U1", sessionId: "u1", target: "knowledge/a.md", change: "A", rationale: "r" });
+    const [pending] = await listPending(dir);
+    const info = { trimmedCount: 0, tokenBudget: 0, userQuery: "", sessionId: "s" };
+    const opts = { toolCallId: "t", messages: [] };
+
+    // A group channel turn neither sees nor settles proposals.
+    assert.equal(await globalMemoryPlugin.onBeforeContext!(info, ctx), null);
+    assert.match(String(await resolveProposalTool.execute!({ file: pending.file, decision: "applied", note: "n" }, opts)), /Only the core/);
+
+    // An automatic turn does both; personal memory is never staged by the core.
+    iface = "system";
+    assert.ok(await globalMemoryPlugin.onBeforeContext!(info, ctx));
+    await mkdir(join(dir, "knowledge"), { recursive: true });
+    await writeFile(join(dir, "knowledge", "a.md"), "A\n");
+    await mkdir(join(dir, "users", "slack_U1"), { recursive: true });
+    await writeFile(join(dir, "users", "slack_U1", "KNOWLEDGE.md"), "private\n");
+    assert.match(String(await resolveProposalTool.execute!({ file: "../../KNOWLEDGE.md", decision: "applied", note: "n" }, opts)), /No pending proposal/);
+    const out = String(await resolveProposalTool.execute!({ file: pending.file, decision: "applied", note: "added a.md" }, opts));
+    assert.match(out, /archived\. Committed \d+ file\(s\); no origin remote/);
+    assert.deepEqual(await listPending(dir), []);
+    assert.match(await read(join(dir, ".kern", "global-inbox", "processed", pending.file), "utf-8"), /## Decision\n\napplied .*: added a.md/);
+    const committed = git("show", "--name-only", "--format=%s", "HEAD");
+    assert.match(committed, /global memory: applied proposal from slack:U1/);
+    assert.match(committed, /knowledge\/a.md/);
+    assert.doesNotMatch(committed, /users\//);
+
+    // A user session commits only its own folder.
+    scope = user("slack:U1");
+    assert.match(String(await commitMemoryTool.execute!({ message: "personal" }, opts)), /Committed 1 file/);
+    assert.equal(git("show", "--name-only", "--format=", "HEAD").trim(), "users/slack_U1/KNOWLEDGE.md");
+    assert.equal(String(await commitMemoryTool.execute!({ message: "again" }, opts)), "Nothing to commit.");
+    assert.deepEqual(await readdir(join(dir, ".kern", "global-inbox")), ["processed"]);
     await globalMemoryPlugin.onShutdown!(ctx);
   });
 });

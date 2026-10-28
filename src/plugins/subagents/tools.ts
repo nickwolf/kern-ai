@@ -1,7 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { PluginContext } from "../types.js";
-import { formatDuration, type SubAgentRegistry } from "./registry.js";
+import { formatDuration, type SubAgentRegistry, type SubAgentRecord } from "./registry.js";
+import { CORE_KEY } from "../../session-router.js";
 
 let _registry: SubAgentRegistry | null = null;
 let _ctx: PluginContext | null = null;
@@ -54,7 +55,7 @@ export const spawnTool = tool({
 
     const origin = _ctx?.origin() ?? null;
     try {
-      const handle = _registry.spawn(prompt, { origin, maxSteps, model });
+      const handle = _registry.spawn(prompt, { origin, maxSteps, model, scope: _ctx?.scope() });
       const deliverable = origin && !UNDELIVERABLE.includes(origin.interface);
       return [
         `Sub-agent spawned: ${handle.id}`,
@@ -76,6 +77,16 @@ export const spawnTool = tool({
     }
   },
 });
+
+/**
+ * Whether the current session may see a sub-agent: one it spawned. Records
+ * from before per-user mode (no sessionKey) belong to the core session.
+ */
+function isOwnRecord(record: SubAgentRecord): boolean {
+  if (_ctx?.config.sessionMode !== "per-user") return true;
+  const current = _ctx.origin()?.sessionKey ?? CORE_KEY;
+  return (record.origin?.sessionKey ?? CORE_KEY) === current;
+}
 
 export const subagentsTool = tool({
   description: [
@@ -100,7 +111,7 @@ export const subagentsTool = tool({
     if (!_registry) return "Error: sub-agents not available.";
 
     if (action === "list") {
-      const all = _registry.list();
+      const all = _registry.list().filter(isOwnRecord);
       if (all.length === 0) return "No sub-agents.";
       return all
         .map((r) => {
@@ -114,6 +125,8 @@ export const subagentsTool = tool({
     if (!id) return "Error: id required for this action.";
 
     if (action === "cancel") {
+      const own = _registry.get(id)?.record;
+      if (own && !isOwnRecord(own)) return `Cannot cancel ${id} — not found or not running.`;
       const ok = _registry.cancel(id);
       if (!ok) return `Cannot cancel ${id} — not found or not running.`;
       return `Cancelled ${id}.`;
@@ -122,7 +135,7 @@ export const subagentsTool = tool({
     // status + result both need the record
     let record = _registry.get(id)?.record;
     if (!record) record = (await _registry.loadFromDisk(id)) ?? undefined;
-    if (!record) return `Sub-agent ${id} not found.`;
+    if (!record || !isOwnRecord(record)) return `Sub-agent ${id} not found.`;
 
     if (action === "result") {
       if (record.status === "running") return `Sub-agent ${id} is still running.`;

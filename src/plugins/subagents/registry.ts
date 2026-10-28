@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { log } from "../../log.js";
 import { runSubAgent, writeRecord, loadRecord, type RunOptions } from "./worker.js";
+import type { SessionScope } from "../../turn-context.js";
 import { resolveModel } from "../../model.js";
 import type { KernConfig } from "../../config.js";
 import type { TurnOrigin } from "../types.js";
@@ -48,6 +49,8 @@ export interface SpawnOptions {
   maxSteps?: number;
   /** Model override. Resolution: this > subAgentModel config > parent model. */
   model?: string;
+  /** Session spawning the child; its file access is limited to match. */
+  scope?: SessionScope;
 }
 
 /**
@@ -101,6 +104,7 @@ export class SubAgentRegistry {
       agentDir: this.agentDir,
       maxSteps: Math.min(opts.maxSteps ?? 20, 50),
       signal: controller.signal,
+      scope: opts.scope,
       onToolCall: () => {
         record.toolCalls++;
       },

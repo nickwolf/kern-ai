@@ -5,7 +5,7 @@ import { createModel } from "./model.js";
 import { allTools, type ToolName } from "./tools/index.js";
 import { SessionManager } from "./session.js";
 import { estimateTextTokens } from "./context.js";
-import { loadConfig, getToolsForScope, type KernConfig } from "./config.js";
+import { loadConfig, getToolsForScope, turnToolScope, isOperatorTurn, SHELL_PLUGIN_TOOLS, type KernConfig, type ToolScope } from "./config.js";
 import { initKernTool, incrementMessageCount, addTokenUsage } from "./tools/kern.js";
 import type { SegmentIndex } from "./segments.js";
 import type { MemoryDB } from "./memory.js";
@@ -13,8 +13,8 @@ import { prepareContext, loadSystemPrompt, buildSystemMessage, addCacheBreakpoin
 import type { ContextInjection, BeforeContextInfo } from "./plugins/types.js";
 import type { Attachment } from "./interfaces/types.js";
 import { extractText, stripAnsi } from "./util.js";
-import { CORE_SCOPE, scopeOwner, type SessionScope } from "./turn-context.js";
-import { guardMemoryTools } from "./user-memory.js";
+import { CORE_SCOPE, scopeOwner, currentTurn, type SessionScope } from "./turn-context.js";
+import { guardMemoryTools, restrictKernTool } from "./user-memory.js";
 export type { SessionStats } from "./context.js";
 
 
@@ -112,7 +112,7 @@ export class Runtime {
 
   async init(): Promise<void> {
     this.config = await loadConfig(this.agentDir);
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
     this.session = new SessionManager(this.agentDir, scopeOwner(this.scope));
     await this.session.init();
     await this.session.load(this.initialSessionId);
@@ -217,7 +217,7 @@ export class Runtime {
     onEvent({ type: "thinking" });
 
     // Reload system prompt (picks up new daily notes, summaries, knowledge changes)
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
 
     // Add user message to session
     const preview = userMessage.slice(0, 80).replace(/\n/g, " ");
@@ -235,20 +235,26 @@ export class Runtime {
     incrementMessageCount();
 
     // Build tools from scope + plugins
-    const tools: Record<string, any> = {};
-    const toolScope = this.scope.kind === "user" && this.config.userToolScope
-      ? this.config.userToolScope
-      : this.config.toolScope;
+    let tools: Record<string, any> = {};
+    const toolScope = this.turnToolScope();
     for (const name of getToolsForScope(toolScope)) {
       if (name in allTools) {
         tools[name] = allTools[name as ToolName];
       }
     }
-    // Plugin tools are always included (not gated by scope)
+    // Plugin tools are always included, except shell tools outside "full"
     Object.assign(tools, this.pluginTools);
-    // Per-user mode: each session sees only personal memory it owns, and user
-    // sessions write only their own memory; global memory is the core's.
-    const turnTools = this.config.sessionMode === "per-user" ? guardMemoryTools(tools, this.agentDir, this.scope) : tools;
+    if (toolScope !== "full") {
+      for (const name of SHELL_PLUGIN_TOOLS) delete tools[name];
+    }
+    // Per-user mode: each session reaches only personal memory it owns (user
+    // sessions write nothing else), and only the operator gets operator-only
+    // kern actions.
+    if (this.config.sessionMode === "per-user") {
+      tools = guardMemoryTools(tools, this.agentDir, this.scope);
+      if (!isOperatorTurn(this.config, this.scope, currentTurn()?.origin.interface)) tools = restrictKernTool(tools);
+    }
+    const turnTools = tools;
 
     const model = createModel(this.config);
     let streamError: unknown = null;
@@ -553,8 +559,13 @@ export class Runtime {
     return this.session.getSessionId();
   }
 
+  /** Tool scope for the current turn (see turnToolScope in config.ts). */
+  private turnToolScope(): ToolScope {
+    return turnToolScope(this.config, this.scope, currentTurn()?.origin.interface);
+  }
+
   async getSystemPrompt(): Promise<string> {
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
     const { system } = await this.buildPromptContext();
     return typeof system === "string" ? system : system.content;
   }

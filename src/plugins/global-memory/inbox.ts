@@ -1,6 +1,6 @@
-import { mkdir, readdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, writeFile, rename } from "fs/promises";
 import { existsSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
 import { globalInboxDir, userDirName } from "../../user-memory.js";
 
 export interface Proposal {
@@ -56,4 +56,21 @@ export async function listPending(agentDir: string): Promise<PendingProposal[]> 
     pending.push({ file, from: field("from"), target: field("target") });
   }
   return pending;
+}
+
+/**
+ * Archive a reviewed proposal into processed/ with the decision appended.
+ * Returns who proposed it, or null when `file` is not a pending proposal.
+ */
+export async function resolveProposal(agentDir: string, file: string, decision: string, note: string, now = new Date()): Promise<string | null> {
+  if (file !== basename(file) || !file.endsWith(".md")) return null;
+  const dir = globalInboxDir(agentDir);
+  const path = join(dir, file);
+  if (!existsSync(path)) return null;
+  const text = await readFile(path, "utf-8");
+  const from = text.match(/^from: (.*)$/m)?.[1]?.trim() ?? "unknown";
+  await mkdir(join(dir, "processed"), { recursive: true });
+  await writeFile(path, `${text.trimEnd()}\n\n## Decision\n\n${decision} (${now.toISOString()}): ${note.trim()}\n`, "utf-8");
+  await rename(path, join(dir, "processed", file));
+  return from;
 }

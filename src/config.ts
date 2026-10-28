@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "fs";
 import { config as loadDotenv } from "dotenv";
 import { log } from "./log.js";
 import { validateModelRoutes } from "./model.js";
+import type { SessionScope } from "./turn-context.js";
 
 export type ToolScope = "full" | "write" | "read";
 export type SessionMode = "shared" | "per-user";
@@ -89,8 +90,14 @@ export interface KernConfig extends ModelConnection {
   userSessionIdleMinutes: number;
   /** Map `<interface>:<userId>` to a shared key so one person's DMs share a session. */
   userAliases: Record<string, string>;
-  /** Tool scope for user sessions. Empty means the same as toolScope. */
+  /** Tool scope for user sessions. Empty = "write" when toolScope is "full", else toolScope. */
   userToolScope: ToolScope | "";
+  /**
+   * Tool scope for core-session turns not started by the operator: group
+   * channels and automatic turns (heartbeat, inbox review). Same default as
+   * userToolScope. Operator turns (web, TUI, CLI) always get toolScope.
+   */
+  groupToolScope: ToolScope | "";
   /** Wake the core session as soon as a user session proposes a global memory change. */
   globalReviewOnPropose: boolean;
 
@@ -150,6 +157,7 @@ export const configDefaults: KernConfig = {
   userSessionIdleMinutes: 60,
   userAliases: {},
   userToolScope: "",
+  groupToolScope: "",
   globalReviewOnPropose: false,
 };
 
@@ -189,6 +197,7 @@ const FIELD_TYPES: Record<string, string> = {
   userSessionIdleMinutes: "number",
   userAliases: "object",
   userToolScope: "string",
+  groupToolScope: "string",
   globalReviewOnPropose: "boolean",
   mcpServers: "object",
 };
@@ -226,6 +235,37 @@ function validateConfig(userConfig: Record<string, unknown>): void {
 
 export function getToolsForScope(scope: ToolScope): string[] {
   return TOOL_SCOPES[scope] || TOOL_SCOPES.full;
+}
+
+/** Plugin tools that run shell commands; available only in the "full" scope. */
+export const SHELL_PLUGIN_TOOLS = ["bash", "jobs"];
+
+/** Interfaces only reachable with the agent's auth token: the operator's. */
+export const OPERATOR_INTERFACES = ["web", "tui", "cli"];
+
+/**
+ * Tool scope for a turn. Shared mode: toolScope, as always. Per-user mode:
+ * the operator's turns on the core session keep toolScope; everyone else
+ * (user sessions, group channels, automatic turns) gets the narrower
+ * userToolScope/groupToolScope, which default to no shell. A shell reaches
+ * every file the agent can, including other users' personal memory.
+ */
+export function turnToolScope(
+  config: Pick<KernConfig, "sessionMode" | "toolScope" | "userToolScope" | "groupToolScope">,
+  session: SessionScope,
+  iface?: string,
+): ToolScope {
+  if (config.sessionMode !== "per-user") return config.toolScope;
+  const restricted = (setting: ToolScope | "") => setting || (config.toolScope === "full" ? "write" : config.toolScope);
+  if (session.kind === "user") return restricted(config.userToolScope);
+  if (!iface || OPERATOR_INTERFACES.includes(iface)) return config.toolScope;
+  return restricted(config.groupToolScope);
+}
+
+/** Whether a turn runs with operator trust (see turnToolScope). */
+export function isOperatorTurn(config: Pick<KernConfig, "sessionMode">, session: SessionScope, iface?: string): boolean {
+  if (config.sessionMode !== "per-user") return true;
+  return session.kind === "core" && (!iface || OPERATOR_INTERFACES.includes(iface));
 }
 
 /** Model configuration errors are fatal: never silently select a different route. */

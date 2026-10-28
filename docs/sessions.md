@@ -41,15 +41,9 @@ users/<user>/KNOWLEDGE.md  users/<user>/knowledge/  users/<user>/notes/   # pers
 
 **Global memory** is written only by the core session. Every session reads it, and since the system prompt is rebuilt each turn, a user session sees the core's latest edits on its next turn.
 
-**Personal memory** belongs to one user's session, and only that session can see it. Its system prompt includes `users/<user>/KNOWLEDGE.md` and the latest note in `users/<user>/notes/`. In per-user mode, the file tools enforce this for every session:
+**Personal memory** belongs to one user's session, and only that session can see it. Its system prompt includes `users/<user>/KNOWLEDGE.md` and the latest note in `users/<user>/notes/`. User sessions save it with `commit_memory`, which commits (and pushes, if the agent repo has an `origin`) only that user's folder.
 
-- `read`, `write` and `edit` refuse paths in other users' folders, and the core session can't open any of them. Group channels run in the core session, so nobody in a channel can get at one person's memory.
-- `glob` and `grep` drop results from those folders.
-- A user session can't write anywhere else inside the agent directory, because global memory is the core's.
-
-`bash` is not guarded, so set `userToolScope: "write"` if user sessions must not touch other files at all. The core session usually needs `bash`, so keep personal memory out of reach of shell commands you run there.
-
-**Proposals.** When a user session learns something everyone should know, it calls `propose_global`, which writes a file to `.kern/global-inbox/`. The core session sees pending proposals in its context on every turn, including heartbeats. It applies or rejects each one, commits, and moves it to `processed/`. With `globalReviewOnPropose: true` the core gets a review turn as soon as a proposal arrives instead of at the next heartbeat. `/inbox` lists pending proposals.
+**Proposals.** When a user session learns something everyone should know, it calls `propose_global`, which writes a file to `.kern/global-inbox/`. The core session sees pending proposals in its heartbeat, review and operator turns, but not in group-channel turns. It applies each accepted change with `write`/`edit`, then settles the proposal with `resolve_proposal`. That tool archives the proposal into `processed/` with the decision and commits global memory, leaving out `users/`. With `globalReviewOnPropose: true` the core gets a review turn as soon as a proposal arrives instead of at the next heartbeat. `/inbox` lists pending proposals.
 
 **Heartbeats.** The core gets the usual `[heartbeat]`. Each user session active since its last heartbeat gets `[heartbeat, scope: user]` and updates its personal notes.
 
@@ -63,6 +57,29 @@ users/<user>/KNOWLEDGE.md  users/<user>/knowledge/  users/<user>/notes/   # pers
   - the operator's web/TUI conversations
   - turns whose channel can't be determined
 
+## Who can reach what
+
+Every session runs in one process as one OS user, so per-user mode enforces privacy at the tool level:
+
+| Turn | Tool scope | Shell | Personal memory | `.kern/` |
+|------|-----------|:-----:|-----------------|----------|
+| Operator (web UI, TUI, CLI) on core | `toolScope` | yes | none through file tools | `global-inbox/` only |
+| Group channel or room on core | `groupToolScope` | no | none | `global-inbox/` only |
+| Heartbeat, inbox review | `groupToolScope` | no | none | `global-inbox/` only |
+| User session (DMs) | `userToolScope` | no | own folder only | none |
+
+`userToolScope` and `groupToolScope` default to `write` when `toolScope` is `full`, which keeps `bash` and `jobs` from everyone but the operator. A shell reaches every file the agent can, so setting either to `full` gives up these guarantees for those turns. With no shell, the core and user sessions commit through `commit_memory`, and the core settles proposals through `resolve_proposal`.
+
+On top of the tool scope:
+
+- `read`, `write`, `edit`, `pdf`, `image` and `audio` refuse protected paths. These are other users' folders (every user's folder for the core session) and `.kern/`, which holds every session's transcripts, the recall index, logs and sub-agent results.
+- `glob` and `grep` drop results under protected paths.
+- A user session can't write anywhere else inside the agent directory, because global memory is the core's.
+- Sub-agents get the same restrictions as the session that spawned them, and `subagents` shows a session only its own children.
+- `kern logs` (which carries message previews from every session) and `kern pair` work only in operator turns.
+
+Operator turns keep the shell, so the operator can still read anything on the box, the same as anyone with shell access to it.
+
 ## Web UI and API
 
 SSE events carry a `sessionKey`. A client sees core events unless it connects with `/events?session=<key>`. `/history` and `/context/system` take `?session=<key>` for loaded sessions. `/status` shows how many sessions are loaded and how many are running.
@@ -75,7 +92,8 @@ SSE events carry a `sessionKey`. A client sees core events unless it connects wi
 | `maxConcurrentSessions` | `4` | model turns running at once |
 | `userSessionIdleMinutes` | `60` | unload idle user sessions, `0` = never |
 | `userAliases` | `{}` | merge one person's accounts |
-| `userToolScope` | `""` | tool scope for user sessions |
+| `userToolScope` | `""` | tool scope for user sessions; empty = `write` when `toolScope` is `full` |
+| `groupToolScope` | `""` | tool scope for group-channel and automatic core turns; same default |
 | `globalReviewOnPropose` | `false` | wake the core when a proposal arrives |
 
 ## Limits
