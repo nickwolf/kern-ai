@@ -18,7 +18,7 @@ export interface RecallRange {
 /** What access checks need from the recall store. */
 export interface EnvelopeSource {
   agentDir: string;
-  /** Envelopes of user messages in a session's message range (inclusive). */
+  /** Envelopes of user messages in a session's message range [start, end), like chunk ranges. */
   envelopesInRange(sessionId: string, start: number, end: number): Envelope[];
   /** Envelopes of user messages in the given sessions that mention userId. */
   envelopesFromUser(sessionIds: string[], userId: string): Envelope[];

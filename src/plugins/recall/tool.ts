@@ -78,7 +78,7 @@ export const recallTool = tool({
       // Load mode
       if (args.sessionId && args.messageStart !== undefined && args.messageEnd !== undefined) {
         const canRead = await recallAccess(_recallIndex, currentTurn()?.scope ?? CORE_SCOPE, _config);
-        if (canRead && !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: Math.max(args.messageStart, args.messageEnd - 1) })) {
+        if (canRead && !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: args.messageEnd })) {
           return "Those messages are not readable from this session (another user's conversation, or a channel this user is not in).";
         }
         return await _recallIndex.loadMessages(args.sessionId, args.messageStart, args.messageEnd);

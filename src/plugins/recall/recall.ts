@@ -307,7 +307,7 @@ export class RecallIndex implements EnvelopeSource {
 
   envelopesInRange(sessionId: string, start: number, end: number): Envelope[] {
     const rows = this.db.prepare(
-      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index >= ? AND msg_index <= ?"
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index >= ? AND msg_index < ?"
     ).all(sessionId, start, end) as Array<{ content: string }>;
     return rows.flatMap((r) => parseEnvelopes(r.content));
   }

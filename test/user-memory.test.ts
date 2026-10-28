@@ -119,10 +119,11 @@ test("recallAccess: core never sees user sessions; users see own sessions and th
     ];
     const source = {
       agentDir: dir,
-      envelopesInRange: (_s: string, a: number, b: number) => byIndex.slice(a, b + 1).flat(),
+      envelopesInRange: (_s: string, a: number, b: number) => byIndex.slice(a, b).flat(),
       envelopesFromUser: (_ids: string[], userId: string) => byIndex.flat().filter((e) => e.userId === userId),
     };
-    const range = (session_id: string, a: number, b = a) => ({ session_id, msg_start: a, msg_end: b });
+    // Chunk ranges are end-exclusive.
+    const range = (session_id: string, a: number, b = a + 1) => ({ session_id, msg_start: a, msg_end: b });
     const perUser = { sessionMode: "per-user" as const, userAliases: {} };
 
     assert.equal(await recallAccess(source, CORE_SCOPE, { sessionMode: "shared", userAliases: {} }), null);
@@ -137,7 +138,8 @@ test("recallAccess: core never sees user sessions; users see own sessions and th
     assert.equal(u1(range("core-1", 1)), true, "a channel U1 posted in, even a message by U2");
     assert.equal(u1(range("core-1", 2)), false, "a channel U1 never posted in");
     assert.equal(u1(range("core-1", 3)), false, "the operator's TUI conversation");
-    assert.equal(u1(range("core-1", 1, 2)), false, "a range touching any foreign channel");
+    assert.equal(u1(range("core-1", 0, 2)), true, "a range ending just before a foreign channel");
+    assert.equal(u1(range("core-1", 1, 3)), false, "a range touching any foreign channel");
     assert.equal(u1(range("core-1", 4)), false, "no envelope, origin unknown");
   });
 });
