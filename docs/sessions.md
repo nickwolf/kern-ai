@@ -103,7 +103,8 @@ Per-user mode keeps coworkers from reading each other's DMs and personal memory 
 3. **Shell workflows.** Heartbeats and group-channel requests lose `bash`. If your heartbeat checklist or team workflows depend on it, decide whether `groupToolScope: "full"` is worth what it gives up, or move that work to operator turns.
 4. **Platform and MCP tools.** List the ones untrusted turns should keep in `untrustedTools`, e.g. `["jira__search"]`.
 5. **Personal memory in git.** Earlier commits may contain `users/`; untracking it doesn't rewrite history.
-6. **Web UI.** It shows the core session. DM sessions stream only to clients that connect with `/events?session=<key>`.
+6. **Git identity.** Group-channel and automatic turns commit through `commit_memory` rather than a shell, so the agent directory needs a git `user.name` and `user.email` (for example `git config` in the agent repo). Without them, commits fail and the tool says so.
+7. **Web UI.** It shows the core session. DM sessions stream only to clients that connect with `/events?session=<key>`.
 
 ## Web UI and API
 
