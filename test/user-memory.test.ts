@@ -342,17 +342,19 @@ test("global-memory: resolve_proposal archives and commits global memory only; u
 
     let scope: SessionScope = CORE_SCOPE;
     let iface = "slack";
+    const notices: { text: string; origin: unknown }[] = [];
     const ctx = {
       agentDir: dir, config: perUser, sessionId: () => "s",
       scope: () => scope, origin: () => ({ interface: iface, channel: "#general", userId: "U9" }),
-      announce: async () => "NO_REPLY",
+      announce: async (text: string, origin: unknown) => { notices.push({ text, origin }); return "NO_REPLY"; },
     } as unknown as PluginContext;
     await globalMemoryPlugin.onStartup!(ctx);
     assert.match(await readFile(join(dir, ".gitignore"), "utf-8"), /^users\/$/m);
     assert.equal(git("ls-files", "users").trim(), "", "stops tracking users/");
     assert.match(git("log", "-1", "--format=%s"), /Stop tracking personal memory/);
 
-    await writeProposal(dir, { from: "slack:U1", sessionId: "u1", target: "knowledge/a.md", change: "A", rationale: "r" });
+    const proposer = { interface: "slack", channel: "slack-dm:U1", chatId: "D1", userId: "U1", sessionKey: "slack:U1" };
+    await writeProposal(dir, { from: "slack:U1", sessionId: "u1", target: "knowledge/a.md", change: "A", rationale: "r", origin: proposer });
     const [pending] = await listPending(dir);
 
     // A group-channel turn can't settle proposals.
@@ -369,6 +371,10 @@ test("global-memory: resolve_proposal archives and commits global memory only; u
     const out = String(await resolveProposalTool.execute!({ file: pending.file, decision: "applied", note: "added a.md" }, opts));
     assert.match(out, /archived\. Committed \d+ file\(s\); no origin remote/);
     assert.deepEqual(await listPending(dir), []);
+    // The proposer's session hears how it went, routed back to their DM.
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].text, "[global-inbox] Your proposal to update knowledge/a.md was applied: added a.md");
+    assert.deepEqual(notices[0].origin, proposer);
     assert.match(await readFile(join(dir, ".kern", "global-inbox", "processed", pending.file), "utf-8"), /## Decision\n\napplied .*: added a.md/);
     const committed = git("show", "--name-only", "--format=%s", "HEAD");
     assert.match(committed, /global memory: applied proposal from slack:U1/);

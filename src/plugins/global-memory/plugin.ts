@@ -54,6 +54,7 @@ export const proposeGlobalTool = tool({
       target,
       change,
       rationale,
+      origin: _ctx.origin(),
     });
     log("global-memory", `proposal ${file} from ${scope.key} → ${target}`);
 
@@ -97,11 +98,19 @@ export const resolveProposalTool = tool({
   execute: async ({ file, decision, note }) => {
     if (!_ctx) return "Global memory is not available.";
     if (!reviewsInbox(_ctx)) return "Only the core session reviews global memory proposals.";
-    const from = await resolveProposal(_ctx.agentDir, file, decision, note);
-    if (!from) return `No pending proposal named ${file} in .kern/global-inbox/.`;
-    log("global-memory", `proposal ${file} from ${from} ${decision}`);
-    const committed = await commitMemory(_ctx.agentDir, CORE_PATHSPECS, `global memory: ${decision} proposal from ${from}: ${note.trim().slice(0, 72)}`)
+    const resolved = await resolveProposal(_ctx.agentDir, file, decision, note);
+    if (!resolved) return `No pending proposal named ${file} in .kern/global-inbox/.`;
+    log("global-memory", `proposal ${file} from ${resolved.from} ${decision}`);
+    const committed = await commitMemory(_ctx.agentDir, CORE_PATHSPECS, `global memory: ${decision} proposal from ${resolved.from}: ${note.trim().slice(0, 72)}`)
       .catch((err) => `Commit failed: ${err.message}`);
+
+    // Tell the proposer's session how it went. Not awaited: that session's
+    // turn may need a concurrency slot this one is holding.
+    const origin = resolved.origin;
+    if (origin?.sessionKey && origin.sessionKey !== CORE_KEY) {
+      const outcome = `[global-inbox] Your proposal to update ${resolved.target} was ${decision}: ${note.trim()}`;
+      _ctx.announce(outcome, origin).catch((err) => log.error("global-memory", `outcome notice failed: ${err.message}`));
+    }
     return `Proposal ${decision} and archived. ${committed}`;
   },
 });

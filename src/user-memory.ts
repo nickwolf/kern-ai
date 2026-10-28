@@ -239,6 +239,7 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, sco
     "Never pass this conversation to anyone else with the message tool unless the user asks you to.",
     "Recall covers this user's own conversations and the shared channels they post in. If they mention something said elsewhere that you can't find, say so rather than guess.",
     "On [heartbeat, scope: user]: update today's note in your notes folder with anything from this conversation worth keeping, message no one, and reply NO_REPLY.",
+    "On a [global-inbox] message: it is the outcome of something this user agreed to share. Tell them in a sentence or two whether it was applied or rejected, and why.",
     NO_SHELL,
   ].join("\n");
 }

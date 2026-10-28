@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, writeFile, rename } from "fs/promises";
 import { existsSync } from "fs";
 import { join, basename } from "path";
 import { globalInboxDir, userDirName } from "../../user-memory.js";
+import type { TurnOrigin } from "../types.js";
 
 export interface Proposal {
   from: string;
@@ -9,6 +10,14 @@ export interface Proposal {
   target: string;
   change: string;
   rationale: string;
+  /** The proposing turn, so the outcome can be announced back to it. */
+  origin?: TurnOrigin | null;
+}
+
+export interface ResolvedProposal {
+  from: string;
+  target: string;
+  origin: TurnOrigin | null;
 }
 
 export interface PendingProposal {
@@ -36,6 +45,7 @@ export async function writeProposal(agentDir: string, p: Proposal, now = new Dat
     `from: ${oneLine(p.from)}`,
     `session: ${oneLine(p.sessionId ?? "unknown")}`,
     `target: ${oneLine(p.target)}`,
+    ...(p.origin ? [`origin: ${JSON.stringify(p.origin)}`] : []),
     `proposed: ${now.toISOString()}`,
     "---",
     "",
@@ -70,15 +80,21 @@ export async function listPending(agentDir: string): Promise<PendingProposal[]> 
  * Archive a reviewed proposal into processed/ with the decision appended.
  * Returns who proposed it, or null when `file` is not a pending proposal.
  */
-export async function resolveProposal(agentDir: string, file: string, decision: string, note: string, now = new Date()): Promise<string | null> {
+export async function resolveProposal(agentDir: string, file: string, decision: string, note: string, now = new Date()): Promise<ResolvedProposal | null> {
   if (file !== basename(file) || !file.endsWith(".md")) return null;
   const dir = globalInboxDir(agentDir);
   const path = join(dir, file);
   if (!existsSync(path)) return null;
   const text = await readFile(path, "utf-8");
-  const from = text.match(/^from: (.*)$/m)?.[1]?.trim() ?? "unknown";
+  const field = (name: string) => text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1]?.trim();
+  let origin: TurnOrigin | null = null;
+  try {
+    origin = JSON.parse(field("origin") ?? "null");
+  } catch {
+    // proposal written before origins were recorded
+  }
   await mkdir(join(dir, "processed"), { recursive: true });
   await writeFile(path, `${text.trimEnd()}\n\n## Decision\n\n${decision} (${now.toISOString()}): ${note.trim()}\n`, "utf-8");
   await rename(path, join(dir, "processed", file));
-  return from;
+  return { from: field("from") ?? "unknown", target: field("target") ?? "?", origin };
 }

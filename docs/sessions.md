@@ -47,7 +47,7 @@ users/<user>/KNOWLEDGE.md  users/<user>/knowledge/  users/<user>/notes/   # pers
 
 **Proposals.** When a DM session learns something everyone should know, it quotes the text to the user and asks before sharing. Once the user agrees, it calls `propose_global`, which writes a file to `.kern/global-inbox/`, and tells the user the change is pending.
 
-The core sees pending proposals in its heartbeat, review and operator turns, not in group-channel turns. It applies each accepted change with `write`/`edit`, then calls `resolve_proposal`, which archives the proposal in `processed/` and commits global memory.
+The core sees pending proposals in its heartbeat, review and operator turns, not in group-channel turns. It applies each accepted change with `write`/`edit`, then calls `resolve_proposal`, which archives the proposal in `processed/` and commits global memory. The outcome goes back to the proposer's session as a `[global-inbox]` message, and the agent tells the user in their DM whether it was applied or rejected, and why.
 
 With `globalReviewOnPropose: true`, the core gets a review turn as soon as a proposal arrives instead of at the next heartbeat. `/inbox` (operator only) lists pending proposals.
 
@@ -127,4 +127,3 @@ SSE events carry a `sessionKey`. A client sees core events unless it connects wi
 - Matrix rooms count as direct only once the agent has seen their member count in a sync.
 - Personal notes have no rolling summary yet; only the latest personal note is injected.
 - Channel membership for recall is inferred from who has posted where, not from the platform's member list.
-- There's no notice when a proposal is applied or rejected; the user session isn't told.
