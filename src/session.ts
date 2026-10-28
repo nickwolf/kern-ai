@@ -1,4 +1,4 @@
-import { readFile, writeFile, appendFile, mkdir } from "fs/promises";
+import { readFile, writeFile, appendFile, mkdir, open } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import type { ModelMessage } from "ai";
@@ -9,14 +9,33 @@ export interface Session {
   messages: ModelMessage[];
   createdAt: string;
   updatedAt: string;
+  /** "core" or a user key. Sessions written before owners existed are core. */
+  owner?: string;
+}
+
+/** Owner from a session file's meta header. Missing owner means core. */
+export async function readSessionOwner(path: string): Promise<string> {
+  const fh = await open(path, "r");
+  try {
+    const buf = Buffer.alloc(4096);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    const first = buf.subarray(0, bytesRead).toString("utf-8").split("\n")[0];
+    return JSON.parse(first).owner ?? "core";
+  } catch {
+    return "core";
+  } finally {
+    await fh.close();
+  }
 }
 
 export class SessionManager {
   private dir: string;
   private session: Session | null = null;
+  private owner: string;
 
-  constructor(agentDir: string) {
+  constructor(agentDir: string, owner = "core") {
     this.dir = join(agentDir, ".kern", "sessions");
+    this.owner = owner;
   }
 
   async init(): Promise<void> {
@@ -95,6 +114,7 @@ export class SessionManager {
       messages,
       createdAt: meta.createdAt,
       updatedAt: meta.updatedAt ?? meta.createdAt,
+      owner: meta.owner ?? "core",
     };
 
     return this.session;
@@ -107,6 +127,7 @@ export class SessionManager {
       messages: [],
       createdAt: now,
       updatedAt: now,
+      owner: this.owner,
     };
     await this.save();
     return this.session;
@@ -153,6 +174,7 @@ export class SessionManager {
       id: this.session.id,
       createdAt: this.session.createdAt,
       updatedAt: this.session.updatedAt,
+      owner: this.session.owner ?? this.owner,
     });
     const lines = [
       meta,
@@ -168,15 +190,18 @@ export class SessionManager {
       const jsonl = files.filter((f) => f.endsWith(".jsonl"));
       if (jsonl.length === 0) return null;
 
-      // Find most recently modified
+      // Find most recently modified session belonging to this owner. In
+      // per-user mode the directory also holds other owners' sessions.
       let latest = { file: "", mtime: 0 };
       for (const f of jsonl) {
+        if (await readSessionOwner(join(this.dir, f)) !== this.owner) continue;
         const s = await stat(join(this.dir, f));
         if (s.mtimeMs > latest.mtime) {
           latest = { file: f, mtime: s.mtimeMs };
         }
       }
 
+      if (!latest.file) return null;
       const id = latest.file.replace(".jsonl", "");
       return this.load(id);
     } catch {

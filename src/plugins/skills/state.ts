@@ -1,24 +1,42 @@
-/** In-memory set of active skill names — resets on restart */
-let activeSkills = new Set<string>();
+import { currentTurn, scopeOwner, CORE_SCOPE } from "../../turn-context.js";
+
+/**
+ * In-memory sets of active skill names — reset on restart. Keyed by session
+ * owner so one user's skills don't leak into another user's session; outside
+ * a turn (HTTP routes, startup) the core set is used.
+ */
+const activeSkillsByOwner = new Map<string, Set<string>>();
+
+function current(): Set<string> {
+  const owner = scopeOwner(currentTurn()?.scope ?? CORE_SCOPE);
+  let set = activeSkillsByOwner.get(owner);
+  if (!set) {
+    set = new Set<string>();
+    activeSkillsByOwner.set(owner, set);
+  }
+  return set;
+}
 
 export function getActiveSkills(): Set<string> {
-  return activeSkills;
+  return current();
 }
 
 export function isActive(name: string): boolean {
-  return activeSkills.has(name);
+  return current().has(name);
 }
 
 /** Activate a skill. Returns true if newly activated, false if already active. */
 export function activate(name: string): boolean {
-  if (activeSkills.has(name)) return false;
-  activeSkills.add(name);
+  const active = current();
+  if (active.has(name)) return false;
+  active.add(name);
   return true;
 }
 
 /** Deactivate a skill. Returns true if was active, false if wasn't. */
 export function deactivate(name: string): boolean {
-  if (!activeSkills.has(name)) return false;
-  activeSkills.delete(name);
+  const active = current();
+  if (!active.has(name)) return false;
+  active.delete(name);
   return true;
 }

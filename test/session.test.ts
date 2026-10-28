@@ -159,3 +159,52 @@ test("interrupted turn marker is persisted once", async () => {
     await rm(agentDir, { recursive: true, force: true });
   }
 });
+
+test("load() without an id resumes only sessions of the same owner", async () => {
+  const agentDir = await makeAgentDir();
+  try {
+    const core = new SessionManager(agentDir);
+    await core.init();
+    await core.create("core-1");
+    await core.append([userMsg(0)]);
+
+    // A user session written later is newer by mtime but must not be picked.
+    await new Promise((r) => setTimeout(r, 20));
+    const user = new SessionManager(agentDir, "slack:U1");
+    await user.create("user-1");
+    await user.append([userMsg(1)]);
+
+    const coreAgain = new SessionManager(agentDir);
+    assert.equal((await coreAgain.load()).id, "core-1");
+
+    const userAgain = new SessionManager(agentDir, "slack:U1");
+    const resumed = await userAgain.load();
+    assert.equal(resumed.id, "user-1");
+    assert.equal(resumed.owner, "slack:U1");
+
+    // An owner with no sessions yet gets a fresh one.
+    const other = new SessionManager(agentDir, "slack:U2");
+    const fresh = await other.load();
+    assert.notEqual(fresh.id, "core-1");
+    assert.notEqual(fresh.id, "user-1");
+    assert.equal(fresh.owner, "slack:U2");
+  } finally {
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("sessions without an owner in their header count as core", async () => {
+  const agentDir = await makeAgentDir();
+  try {
+    const manager = new SessionManager(agentDir);
+    await manager.init();
+    const meta = JSON.stringify({ id: "legacy", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
+    await appendFile(sessionPath(agentDir, "legacy"), `${meta}\n${JSON.stringify(userMsg(0))}\n`);
+
+    assert.equal((await new SessionManager(agentDir).load()).id, "legacy");
+    const user = await new SessionManager(agentDir, "slack:U1").load();
+    assert.notEqual(user.id, "legacy");
+  } finally {
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});

@@ -13,21 +13,25 @@ const MIME_MAP: Record<string, string> = {
   mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
 };
 
-let mediaSidecar: MediaSidecar | null = null;
+// One sidecar per session: in per-user mode several sessions are live at once.
+const mediaSidecars = new Map<string, MediaSidecar>();
 
 /**
- * Get the sidecar, creating it lazily if the session wasn't loaded yet when
- * onStartup ran. Resolution must never be skipped for lack of a sidecar — it
- * only needs it for labels and the digest cache.
+ * Get the current session's sidecar, creating it lazily if the session wasn't
+ * loaded yet when onStartup ran. Resolution must never be skipped for lack of
+ * a sidecar — it only needs it for labels and the digest cache.
  */
 function ensureSidecar(ctx: PluginContext): MediaSidecar {
-  if (mediaSidecar) return mediaSidecar;
   const sessionsDir = join(ctx.agentDir, ".kern", "sessions");
   const sessionId = ctx.sessionId();
   if (sessionId) {
-    mediaSidecar = new MediaSidecar(sessionsDir, sessionId, ctx.db);
-    mediaSidecar.load();
-    return mediaSidecar;
+    let sidecar = mediaSidecars.get(sessionId);
+    if (!sidecar) {
+      sidecar = new MediaSidecar(sessionsDir, sessionId, ctx.db);
+      sidecar.load();
+      mediaSidecars.set(sessionId, sidecar);
+    }
+    return sidecar;
   }
   // No session yet — ephemeral, not cached, so the real one is picked up
   // as soon as a session exists.
@@ -83,12 +87,8 @@ export const mediaPlugin: KernPlugin = {
     (this.routes as any)?._setCtx(ctx);
 
     // Init media sidecar if session already exists
-    const sessionId = ctx.sessionId();
-    if (sessionId) {
-      const sessionsDir = join(ctx.agentDir, ".kern", "sessions");
-      mediaSidecar = new MediaSidecar(sessionsDir, sessionId, ctx.db);
-      mediaSidecar.load();
-    }
+    mediaSidecars.clear();
+    if (ctx.sessionId()) ensureSidecar(ctx);
 
     log("media", "plugin loaded");
   },

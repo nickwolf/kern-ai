@@ -1,18 +1,22 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { RecallIndex } from "./recall.js";
+import { currentTurn } from "../../turn-context.js";
 
 let _recallIndex: RecallIndex | null = null;
-let _contextSessionId: string | null = null;
-let _contextTrimmedCount = 0;
+// Context-window bounds per session, so concurrent sessions don't overwrite
+// each other's. The last session to build context is the fallback when a
+// tool runs outside a turn.
+const _contextTrimmed = new Map<string, number>();
+let _lastContextSessionId: string | null = null;
 
 export function setRecallIndex(index: RecallIndex | null) {
   _recallIndex = index;
 }
 
 export function setContextBounds(sessionId: string, trimmedCount: number) {
-  _contextSessionId = sessionId;
-  _contextTrimmedCount = trimmedCount;
+  _contextTrimmed.set(sessionId, trimmedCount);
+  _lastContextSessionId = sessionId;
 }
 
 export const recallTool = tool({
@@ -77,9 +81,11 @@ export const recallTool = tool({
         }
 
         // Filter out chunks already in context window
-        if (_contextSessionId && _contextTrimmedCount > 0) {
+        const contextSessionId = currentTurn()?.sessionId ?? _lastContextSessionId;
+        const contextTrimmedCount = contextSessionId ? _contextTrimmed.get(contextSessionId) ?? 0 : 0;
+        if (contextSessionId && contextTrimmedCount > 0) {
           results = results.filter(r =>
-            !(r.session_id === _contextSessionId && r.msg_end >= _contextTrimmedCount)
+            !(r.session_id === contextSessionId && r.msg_end >= contextTrimmedCount)
           );
         }
         

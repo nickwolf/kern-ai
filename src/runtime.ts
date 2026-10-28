@@ -13,6 +13,7 @@ import { prepareContext, loadSystemPrompt, buildSystemMessage, addCacheBreakpoin
 import type { ContextInjection, BeforeContextInfo } from "./plugins/types.js";
 import type { Attachment } from "./interfaces/types.js";
 import { extractText, stripAnsi } from "./util.js";
+import { CORE_SCOPE, scopeOwner, type SessionScope } from "./turn-context.js";
 export type { SessionStats } from "./context.js";
 
 
@@ -35,6 +36,8 @@ export class Runtime {
   private systemPrompt!: string;
   private session!: SessionManager;
   private agentDir: string;
+  private initialSessionId: string | undefined;
+  readonly scope: SessionScope;
   private segmentIndex: SegmentIndex | null = null;
   private memoryDB: MemoryDB | null = null;
 
@@ -63,8 +66,10 @@ export class Runtime {
     return this.currentTurnSnapshot;
   }
 
-  constructor(agentDir: string) {
+  constructor(agentDir: string, opts: { sessionId?: string; scope?: SessionScope } = {}) {
     this.agentDir = agentDir;
+    this.initialSessionId = opts.sessionId;
+    this.scope = opts.scope ?? CORE_SCOPE;
   }
 
   addTools(tools: Record<string, any>) {
@@ -88,6 +93,7 @@ export class Runtime {
   }
 
   async setPairingManager(pairing: any): Promise<void> {
+    if (this.scope.kind !== "core") return;
     const { initKernTool } = await import("./tools/kern.js");
     await initKernTool({
       agentDir: this.agentDir,
@@ -106,10 +112,12 @@ export class Runtime {
   async init(): Promise<void> {
     this.config = await loadConfig(this.agentDir);
     this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions);
-    this.session = new SessionManager(this.agentDir);
+    this.session = new SessionManager(this.agentDir, scopeOwner(this.scope));
     await this.session.init();
-    await this.session.load();
+    await this.session.load(this.initialSessionId);
 
+    // The kern tool reports on the agent as a whole, so the core runtime owns it.
+    if (this.scope.kind !== "core") return;
     await initKernTool({
       agentDir: this.agentDir,
       config: this.config,

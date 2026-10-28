@@ -3,6 +3,7 @@ import type { MemoryDB } from "../memory.js";
 import type { KernConfig } from "../config.js";
 import type { StreamEvent } from "../runtime.js";
 import type { Attachment } from "../interfaces/types.js";
+import type { SessionScope } from "../turn-context.js";
 
 /**
  * Where a turn came from: the interface, the envelope channel label, the
@@ -29,10 +30,14 @@ export interface PluginContext {
   agentDir: string;
   config: KernConfig;
   db: MemoryDB;
+  /** Session of the turn currently being processed, else the core session. */
   sessionId: () => string | null;
+  /** Memory scope of the turn currently being processed, else core. */
+  scope: () => SessionScope;
   /**
    * Origin of the turn currently being processed, or null when idle.
-   * Turns are serialized, so this is safe to read from a tool's execute().
+   * Async-local, so this is safe to read from a tool's execute() even when
+   * several sessions run turns concurrently.
    */
   origin: () => TurnOrigin | null;
   /**
