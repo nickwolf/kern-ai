@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile, rename } from "fs/promises";
+import { mkdir, readdir, readFile, writeFile, rename, rm } from "fs/promises";
 import { existsSync } from "fs";
 import { join, basename } from "path";
 import { globalInboxDir, userDirName } from "../../user-memory.js";
@@ -34,6 +34,9 @@ function oneLine(value: string): string {
   return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 120);
 }
 
+/** Where each proposal's origin (for the outcome notice) is kept, next to the proposals. */
+const ORIGINS = ".origins";
+
 /** Write a proposal into .kern/global-inbox/. Returns the file name. */
 export async function writeProposal(agentDir: string, p: Proposal, now = new Date()): Promise<string> {
   const dir = globalInboxDir(agentDir);
@@ -45,7 +48,6 @@ export async function writeProposal(agentDir: string, p: Proposal, now = new Dat
     `from: ${oneLine(p.from)}`,
     `session: ${oneLine(p.sessionId ?? "unknown")}`,
     `target: ${oneLine(p.target)}`,
-    ...(p.origin ? [`origin: ${JSON.stringify(p.origin)}`] : []),
     `proposed: ${now.toISOString()}`,
     "---",
     "",
@@ -59,6 +61,11 @@ export async function writeProposal(agentDir: string, p: Proposal, now = new Dat
     "",
   ].join("\n");
   await writeFile(join(dir, file), body, "utf-8");
+  // Routing data for the outcome notice stays out of the proposal the model reads.
+  if (p.origin) {
+    await mkdir(join(dir, ORIGINS), { recursive: true });
+    await writeFile(join(dir, ORIGINS, `${file}.json`), JSON.stringify(p.origin), "utf-8");
+  }
   return file;
 }
 
@@ -87,11 +94,11 @@ export async function resolveProposal(agentDir: string, file: string, decision: 
   if (!existsSync(path)) return null;
   const text = await readFile(path, "utf-8");
   const field = (name: string) => text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1]?.trim();
+  const originPath = join(dir, ORIGINS, `${file}.json`);
   let origin: TurnOrigin | null = null;
-  try {
-    origin = JSON.parse(field("origin") ?? "null");
-  } catch {
-    // proposal written before origins were recorded
+  if (existsSync(originPath)) {
+    origin = JSON.parse(await readFile(originPath, "utf-8"));
+    await rm(originPath, { force: true });
   }
   await mkdir(join(dir, "processed"), { recursive: true });
   await writeFile(path, `${text.trimEnd()}\n\n## Decision\n\n${decision} (${now.toISOString()}): ${note.trim()}\n`, "utf-8");

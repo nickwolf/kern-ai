@@ -164,7 +164,7 @@ export const globalMemoryPlugin: KernPlugin = {
     if (pending.length === 0) return null;
     return {
       label: "global-inbox",
-      content: `${pending.length} pending proposal(s) to review:\n${formatPending(pending)}`,
+      content: `${pending.length} pending proposal(s) to review. Each was written by a user's own session, with that user's agreement:\n${formatPending(pending)}`,
       placement: "system",
     };
   },

@@ -387,7 +387,9 @@ test("global-memory: resolve_proposal archives and commits global memory only; u
     scope = user("slack:U1");
     assert.match(String(await commitMemoryTool.execute!({ message: "personal" }, opts)), /kept out of git/);
     assert.equal(git("status", "--porcelain", "--", "users").trim(), "");
-    assert.deepEqual((await readdir(join(dir, ".kern", "global-inbox"))).sort(), ["processed"]);
+    assert.deepEqual((await readdir(join(dir, ".kern", "global-inbox"))).sort(), [".origins", "processed"]);
+    assert.deepEqual(await readdir(join(dir, ".kern", "global-inbox", ".origins")), [], "origin removed once settled");
+    assert.doesNotMatch(await readFile(join(dir, ".kern", "global-inbox", "processed", pending.file), "utf-8"), /origin/);
     await globalMemoryPlugin.onShutdown!(ctx);
   });
 });
