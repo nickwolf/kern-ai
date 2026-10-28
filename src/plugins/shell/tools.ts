@@ -1,6 +1,9 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { shellExec, formatShellResult } from "../../tools/shell.js";
+import { shellExec, argvExec, formatShellResult } from "../../tools/shell.js";
+import { isOperatorTurn } from "../../config.js";
+import { sandboxArgv, sandboxedShellEnabled } from "../../sandbox.js";
+import { CORE_KEY } from "../../session-router.js";
 import type { PluginContext } from "../types.js";
 import { JobRegistry, formatDuration, formatHeader } from "./registry.js";
 
@@ -17,6 +20,23 @@ export const BACKGROUND_GRACE_MS = 2000;
 
 /** Origins with no chat to deliver a wake-up reply to (web/tui get it over SSE). */
 const UNDELIVERABLE = ["cli", "system"];
+
+/**
+ * How the current turn runs commands: null for a plain shell (the operator,
+ * or shared mode), otherwise the scope to sandbox for. Untrusted turns only
+ * get bash when the sandbox works (see runtime.ts pluginToolAllowed).
+ */
+function sandboxScope() {
+  if (!_ctx || _ctx.config.sessionMode !== "per-user") return null;
+  if (isOperatorTurn(_ctx.config, _ctx.scope(), _ctx.origin()?.interface)) return null;
+  return _ctx.scope();
+}
+
+/** Whether the current turn may see a job: the operator sees all, others only their session's. */
+function isOwnJob(origin: { sessionKey?: string } | null | undefined): boolean {
+  if (!sandboxScope()) return true;
+  return (origin?.sessionKey ?? CORE_KEY) === (_ctx?.origin()?.sessionKey ?? CORE_KEY);
+}
 
 export const bashTool = tool({
   description: [
@@ -49,9 +69,12 @@ export const bashTool = tool({
       .describe("Background only: announce a 'still running' reminder every N seconds while the job runs (default: never)"),
   }),
   execute: async ({ command, timeout, background, remindEvery }) => {
+    const scope = sandboxScope();
+    if (scope && !sandboxedShellEnabled(_ctx!.config)) return "Error: no shell in this conversation.";
+    const argv = scope ? sandboxArgv(_ctx!.agentDir, scope, command, _ctx!.config) : undefined;
     if (!background) {
       const t = timeout ?? 120000;
-      const result = await shellExec(command, { timeout: t });
+      const result = argv ? await argvExec(argv[0], argv[1], { timeout: t }) : await shellExec(command, { timeout: t });
       return formatShellResult(result, t);
     }
 
@@ -63,6 +86,7 @@ export const bashTool = tool({
       timeout,
       graceMs: BACKGROUND_GRACE_MS,
       remindEverySec: remindEvery,
+      argv,
     });
 
     // The registry owns the grace clock: exactly one of {this call, announce}
@@ -116,7 +140,7 @@ export const jobsTool = tool({
     if (!_registry) return "Error: background jobs not available.";
 
     if (action === "list") {
-      const all = _registry.list();
+      const all = _registry.list().filter((r) => isOwnJob(r.origin));
       if (all.length === 0) return "No jobs.";
       return all
         .map((r) => {
@@ -128,6 +152,8 @@ export const jobsTool = tool({
     }
 
     if (!id) return "Error: id required for this action.";
+    const known = _registry.get(id)?.record ?? (await _registry.loadFromDisk(id)) ?? undefined;
+    if (known && !isOwnJob(known.origin)) return `Job ${id} not found.`;
 
     if (action === "kill") {
       const ok = _registry.kill(id);

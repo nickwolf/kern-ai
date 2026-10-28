@@ -103,6 +103,14 @@ export interface KernConfig extends ModelConnection {
    * may use besides the built-in safe set. See UNTRUSTED_PLUGINS.
    */
   untrustedTools: string[];
+  /** Tools untrusted turns never get, e.g. an MCP server that can read local files. */
+  untrustedDeniedTools: string[];
+  /** "sandbox" (default): untrusted turns get bash in a bubblewrap sandbox. "off": no shell. */
+  untrustedShell: "sandbox" | "off";
+  /** Environment variables passed into the sandboxed shell (everything else is cleared). */
+  untrustedShellEnv: string[];
+  /** Extra directories hidden from the sandboxed shell (e.g. host mounts holding secrets). */
+  untrustedShellHide: string[];
   /**
    * Chat accounts trusted like the operator, as user keys (`slack:U0123`, or
    * an alias). Their DMs get toolScope, full file access and operator-only
@@ -172,6 +180,10 @@ export const configDefaults: KernConfig = {
   userToolScope: "",
   groupToolScope: "",
   untrustedTools: [],
+  untrustedDeniedTools: [],
+  untrustedShell: "sandbox",
+  untrustedShellEnv: [],
+  untrustedShellHide: [],
   operatorUsers: [],
   operatorContact: "",
   globalReviewOnPropose: false,
@@ -215,6 +227,10 @@ const FIELD_TYPES: Record<string, string> = {
   userToolScope: "string",
   groupToolScope: "string",
   untrustedTools: "string[]",
+  untrustedDeniedTools: "string[]",
+  untrustedShell: "string",
+  untrustedShellEnv: "string[]",
+  untrustedShellHide: "string[]",
   operatorUsers: "string[]",
   operatorContact: "string",
   globalReviewOnPropose: "boolean",
@@ -263,12 +279,13 @@ export const SHELL_PLUGIN_TOOLS = ["bash", "jobs"];
 export const OPERATOR_INTERFACES = ["web", "tui", "cli"];
 
 /**
- * Plugins whose tools untrusted turns keep in per-user mode. The rest
- * (Slack, Matrix, Discord, Telegram, IRC, OpenRouter, MCP) act with the
- * agent's own credentials across every conversation, e.g. reading any DM the
- * bot has, so they are operator-only unless listed in `untrustedTools`.
+ * Plugins whose tools untrusted turns keep in per-user mode. MCP servers
+ * don't reach kern's memory. Slack and Matrix check each action against the
+ * requester's own access (see their tools). Discord, Telegram, IRC and
+ * OpenRouter act with the agent's credentials across every conversation, so
+ * they are operator-only unless listed in `untrustedTools`.
  */
-export const UNTRUSTED_PLUGINS = ["recall", "skills", "subagents", "global-memory", "dashboard"];
+export const UNTRUSTED_PLUGINS = ["recall", "skills", "subagents", "global-memory", "dashboard", "mcp", "slack", "matrix"];
 
 /**
  * Tool scope for a turn. Shared mode: toolScope, as always. Per-user mode:
@@ -316,6 +333,9 @@ export function validateSessionConfig(config: KernConfig): void {
     if (config[key] !== "" && !(config[key] in TOOL_SCOPES)) {
       throw new Error(`${key}: expected "full", "write", "read" or "" (default), got "${config[key]}"`);
     }
+  }
+  if (!["sandbox", "off"].includes(config.untrustedShell)) {
+    throw new Error(`untrustedShell: expected "sandbox" or "off", got "${config.untrustedShell}"`);
   }
   if (config.sessionMode === "per-user" && !(config.toolScope in TOOL_SCOPES)) {
     throw new Error(`toolScope: expected "full", "write" or "read", got "${config.toolScope}"`);

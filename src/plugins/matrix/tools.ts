@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { untrustedRequester } from "../../trust.js";
 import type { MatrixInterface } from "../../interfaces/matrix.js";
 
 let _matrixClient: MatrixInterface | null = null;
@@ -10,6 +11,24 @@ export function setMatrixClient(client: MatrixInterface | null) {
 
 export function getMatrixClient(): MatrixInterface | null {
   return _matrixClient;
+}
+
+/**
+ * Why `requester` may not use `roomId` through the agent, or null if they
+ * may: public rooms, and rooms they have joined (their DM with the agent too).
+ */
+async function roomDenied(client: MatrixInterface, roomId: string, requester: string): Promise<string | null> {
+  const deny = `${roomId} isn't visible from this conversation: it's a room the person asking hasn't joined.`;
+  const room = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}`;
+  try {
+    const rules = await client.callApi<any>("GET", `${room}/state/m.room.join_rules`).catch(() => null);
+    if (rules?.join_rule === "public") return null;
+    if (!requester) return deny;
+    const members = await client.callApi<any>("GET", `${room}/joined_members`);
+    return members?.joined && requester in members.joined ? null : deny;
+  } catch {
+    return deny;
+  }
 }
 
 export const matrixTool = tool({
@@ -116,6 +135,25 @@ export const matrixTool = tool({
 
     const client = _matrixClient;
     const boundedLimit = Math.min(Math.max(1, limit), 100);
+
+    // Per-user mode, untrusted turns: only rooms the person asking could see
+    // in Matrix themselves, and no raw API calls.
+    const requester = untrustedRequester("matrix");
+    if (requester !== null) {
+      if (action === "raw") return { error: "Raw Matrix API calls are only available to the agent's operator." };
+      if (action === "rooms") {
+        const res = await client.callApi<any>("GET", "/_matrix/client/v3/joined_rooms").catch(() => ({ joined_rooms: [] }));
+        const visible: string[] = [];
+        for (const r of (res.joined_rooms || []) as string[]) {
+          if (!(await roomDenied(client, r, requester))) visible.push(r);
+        }
+        return { count: visible.length, rooms: visible.map((r) => ({ roomId: r })) };
+      }
+      if (roomId) {
+        const denied = await roomDenied(client, roomId, requester);
+        if (denied) return { error: denied };
+      }
+    }
 
     try {
       switch (action) {

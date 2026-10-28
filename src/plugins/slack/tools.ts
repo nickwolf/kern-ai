@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { untrustedRequester } from "../../trust.js";
 import type { WebClient } from "@slack/web-api";
 
 let _client: WebClient | null = null;
@@ -10,6 +11,32 @@ export function setSlackWebClient(client: WebClient | null) {
 
 export function getSlackWebClient(): WebClient | null {
   return _client;
+}
+
+/**
+ * Why `requester` may not use `channel` through the agent, or null if they
+ * may: public channels, private channels and group DMs they belong to, and
+ * their own DM with the agent.
+ */
+async function channelDenied(client: WebClient, channel: string, requester: string): Promise<string | null> {
+  const deny = `Error: ${channel} isn't visible from this conversation: it's a DM or private channel the person asking isn't in.`;
+  try {
+    const info = await client.conversations.info({ channel });
+    const c = info.channel as any;
+    if (!c) return deny;
+    if (c.is_im) return requester && c.user === requester ? null : deny;
+    if (!c.is_private && !c.is_mpim) return null;
+    if (!requester) return deny;
+    let cursor: string | undefined;
+    do {
+      const page = await client.conversations.members({ channel, cursor, limit: 1000 });
+      if (page.members?.includes(requester)) return null;
+      cursor = page.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return deny;
+  } catch {
+    return deny;
+  }
 }
 
 export const slackTool = tool({
@@ -38,6 +65,17 @@ export const slackTool = tool({
 
     const client = _client;
     const boundedLimit = Math.min(Math.max(1, limit), 100);
+
+    // Per-user mode, untrusted turns: only what the person asking could see
+    // in Slack themselves.
+    const requester = untrustedRequester("slack");
+    if (requester !== null) {
+      if (action === "channels") types = "public_channel";
+      else if (channel && action !== "user") {
+        const denied = await channelDenied(client, channel, requester);
+        if (denied) return denied;
+      }
+    }
 
     try {
       switch (action) {

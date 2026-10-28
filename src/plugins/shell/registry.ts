@@ -71,6 +71,8 @@ export interface StartOptions {
    * fires one interval after the grace window closes.
    */
   remindEverySec?: number;
+  /** Run this program instead of `command` through a shell (e.g. the sandbox wrapper). */
+  argv?: [string, string[]];
 }
 
 /**
@@ -152,13 +154,10 @@ export class JobRegistry {
       remindEverySec: remindMs ? opts.remindEverySec : undefined,
     };
 
-    const child = spawn(command, {
-      shell: true,
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      // Own process group so kill() reaches the whole pipeline, not just `sh`.
-      detached: !isWindows,
-    });
+    // Own process group (detached) so kill() reaches the whole pipeline, not just `sh`.
+    const child = opts.argv
+      ? spawn(opts.argv[0], opts.argv[1], { cwd, stdio: ["ignore", "pipe", "pipe"], detached: !isWindows })
+      : spawn(command, { shell: true, cwd, stdio: ["ignore", "pipe", "pipe"], detached: !isWindows });
     record.pid = child.pid;
     // Persist immediately so a crash leaves a record that startup can reap.
     this.persist(record);

@@ -30,6 +30,8 @@ import type { QueuedMessage } from "./queue.js";
 import { SessionRouter, CORE_KEY, isPerUserMode, userKey, type Route } from "./session-router.js";
 import { isLegacySession } from "./session.js";
 import { forgetMediaSession } from "./plugins/media/plugin.js";
+import { setTrustConfig } from "./trust.js";
+import { sandboxReady } from "./sandbox.js";
 import { forgetContextBounds } from "./plugins/recall/tool.js";
 import { forgetActiveSkills } from "./plugins/skills/state.js";
 import { getStatusData as getStatusDataFn, setQueueStatusFn, setInterfaceStatusFn, setSegmentStatsFn, setPluginStatusFn, type InterfaceStatus } from "./tools/kern.js";
@@ -271,6 +273,8 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     };
   };
   wireRuntime(runtime);
+  setTrustConfig(config);
+  if (isPerUserMode(config) && config.untrustedShell === "sandbox") sandboxReady();
   if (isPerUserMode(config)) {
     const unknown = config.untrustedTools.filter((name) => !(name in pluginTools));
     if (unknown.length) log.warn("kern", `untrustedTools: no plugin tool named ${unknown.join(", ")} (names are exact, e.g. "slack" or "<server>__<tool>")`);

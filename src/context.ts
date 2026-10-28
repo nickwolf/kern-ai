@@ -25,6 +25,7 @@ export async function loadSystemPrompt(
   scope: SessionScope = CORE_SCOPE,
   toolScope: ToolScope = config.toolScope,
   operator = false,
+  sandboxedShell = false,
 ): Promise<string> {
   const parts: string[] = [];
 
@@ -63,7 +64,7 @@ export async function loadSystemPrompt(
 
   // Per-user session mode: which memory this session owns, and the user's
   // personal knowledge index.
-  const instructions = sessionInstructions(config, scope, operator);
+  const instructions = sessionInstructions(config, scope, operator, sandboxedShell);
   if (instructions) {
     parts.push(`<session>\n${instructions}\n</session>`);
   }
@@ -95,7 +96,7 @@ export async function loadSystemPrompt(
   // Plugin tools are always available — add them to the list
   // except shell tools outside the "full" scope (see turnToolScope)
   const pluginToolNames = Object.keys(pluginToolDescriptions)
-    .filter(t => toolScope === "full" || !SHELL_PLUGIN_TOOLS.includes(t));
+    .filter(t => toolScope === "full" || sandboxedShell || !SHELL_PLUGIN_TOOLS.includes(t));
   const allToolNames = [...tools, ...pluginToolNames.filter(t => !tools.includes(t))];
   const toolList = allToolNames.map(t => `- **${t}**: ${toolDescriptions[t] || t}`).join("\n");
 

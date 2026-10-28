@@ -4,7 +4,7 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
     curl wget jq git openssh-client \
     python3 python3-pip \
-    unzip ca-certificates \
+    unzip ca-certificates bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22 via NodeSource

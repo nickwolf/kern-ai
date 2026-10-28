@@ -15,6 +15,7 @@ import type { Attachment } from "./interfaces/types.js";
 import { extractText, stripAnsi } from "./util.js";
 import { CORE_SCOPE, scopeOwner, currentTurn, type SessionScope } from "./turn-context.js";
 import { guardMemoryTools, restrictKernTool } from "./user-memory.js";
+import { sandboxedShellEnabled } from "./sandbox.js";
 export type { SessionStats } from "./context.js";
 
 
@@ -579,8 +580,13 @@ export class Runtime {
    * UNTRUSTED_PLUGINS plus the operator's `untrustedTools`.
    */
   private pluginToolAllowed(name: string, toolScope: ToolScope): boolean {
-    if (toolScope !== "full" && SHELL_PLUGIN_TOOLS.includes(name)) return false;
-    if (this.config.sessionMode !== "per-user" || this.isOperatorTurn()) return true;
+    const untrusted = this.config.sessionMode === "per-user" && !this.isOperatorTurn();
+    if (SHELL_PLUGIN_TOOLS.includes(name) && toolScope !== "full") {
+      // Untrusted turns get the shell only inside the sandbox.
+      return untrusted && sandboxedShellEnabled(this.config);
+    }
+    if (!untrusted) return true;
+    if (this.config.untrustedDeniedTools.includes(name)) return false;
     return UNTRUSTED_PLUGINS.includes(this.pluginToolOwners[name] ?? "") || this.config.untrustedTools.includes(name);
   }
 
@@ -590,7 +596,8 @@ export class Runtime {
     const descriptions = Object.fromEntries(
       Object.entries(this.pluginToolDescriptions).filter(([name]) => this.pluginToolAllowed(name, toolScope)),
     );
-    return loadSystemPrompt(this.agentDir, this.config, descriptions, this.scope, toolScope, this.isOperatorTurn());
+    const sandboxed = !this.isOperatorTurn() && this.pluginToolAllowed("bash", toolScope) && "bash" in this.pluginTools;
+    return loadSystemPrompt(this.agentDir, this.config, descriptions, this.scope, toolScope, this.isOperatorTurn(), sandboxed);
   }
 
   async getSystemPrompt(): Promise<string> {

@@ -267,9 +267,12 @@ export function restrictKernTool(tools: Record<string, any>): Record<string, any
   };
 }
 
-function noShell(contact: string): string {
+function noShell(contact: string, sandboxed: boolean, scope: SessionScope): string {
   const who = contact ? `the agent's operator (${contact})` : "the agent's operator";
-  return "If a request needs a shell, logs or a platform tool you don't have in this turn, say plainly that " +
+  const sandbox = !sandboxed ? "" : scope.kind === "user"
+    ? "Your bash runs in a sandbox: other users' memory, .kern/ and .git/ don't exist in it, its environment holds no secrets, and only your memory folder and /tmp are writable. "
+    : "Your bash runs in a sandbox: users' memory, .kern/ and .git/ don't exist in it, its environment holds no secrets, and AGENTS.md, IDENTITY.md, KERN.md and skills/ are read-only. ";
+  return sandbox + `If a request needs ${sandboxed ? "access" : "a shell, logs or a platform tool"} you don't have in this turn, say plainly that ` +
     `this conversation doesn't have that access by design, and that ${who} can do it.`;
 }
 
@@ -277,7 +280,12 @@ function noShell(contact: string): string {
  * Instructions telling the model which memory it owns in this turn. They
  * override the single-session wording in KERN.md and AGENTS.md.
  */
-export function sessionInstructions(config: Pick<KernConfig, "sessionMode" | "operatorContact">, scope: SessionScope, operator = false): string | null {
+export function sessionInstructions(
+  config: Pick<KernConfig, "sessionMode" | "operatorContact">,
+  scope: SessionScope,
+  operator = false,
+  sandboxedShell = false,
+): string | null {
   if (config.sessionMode !== "per-user") return null;
   if (scope.kind === "core") {
     const lines = [
@@ -293,7 +301,7 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode" | "op
     ];
     lines.push(operator
       ? "This turn is the operator's, with full access, including users' personal memory under users/<user>/. Share it only with the operator, never into a channel or global memory."
-      : `Users' personal memory (users/<user>/) and private sessions are not accessible in this turn. ${noShell(config.operatorContact ?? "")}`);
+      : `Users' personal memory (users/<user>/) and private sessions are not accessible in this turn. ${noShell(config.operatorContact ?? "", sandboxedShell, scope)}`);
     return lines.join("\n");
   }
   const dir = userMemoryRelPath(scope.key);
@@ -309,7 +317,7 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode" | "op
     "On a [global-inbox] message: it is the outcome of something this user agreed to share. Tell them in a sentence or two whether it was applied or rejected, and why.",
     operator
       ? "This user is one of the agent's operators: this conversation has full access, including the shell and every user's memory. Share another user's private details only when they ask for them."
-      : noShell(config.operatorContact ?? ""),
+      : noShell(config.operatorContact ?? "", sandboxedShell, scope),
   ].join("\n");
 }
 

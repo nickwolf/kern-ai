@@ -170,3 +170,37 @@ test("slackTool: pins and bookmarks actions return items", async () => {
   const bookmarksRes = await (slackTool as any).execute({ action: "bookmarks", channel: "C123" });
   assert.match(bookmarksRes, /Grafana — https:\/\/grafana\.example\.com/);
 });
+
+test("slack tool, per-user mode: untrusted turns reach only what the requester can", async () => {
+  const { setSlackWebClient, slackTool } = await import("../src/plugins/slack/tools.js");
+  const { setTrustConfig } = await import("../src/trust.js");
+  const { turnContext } = await import("../src/turn-context.js");
+  const channels: Record<string, any> = {
+    CPUB: { is_private: false }, CPRIV: { is_private: true }, DALICE: { is_im: true, user: "UALICE" }, DBOB: { is_im: true, user: "UBOB" },
+  };
+  let listedTypes = "";
+  setSlackWebClient({
+    conversations: {
+      info: async ({ channel }: any) => ({ ok: true, channel: channels[channel] }),
+      members: async ({ channel }: any) => ({ ok: true, members: channel === "CPRIV" ? ["UALICE"] : [] }),
+      history: async () => ({ ok: true, messages: [{ user: "U1", text: "hello", ts: "1" }] }),
+      list: async ({ types }: any) => { listedTypes = types; return { ok: true, channels: [] }; },
+    },
+  } as any);
+  setTrustConfig({ sessionMode: "per-user", operatorUsers: [] });
+  const as = (userId: string, fn: () => Promise<unknown>) =>
+    turnContext.run({ origin: { interface: "slack", channel: "dm", userId }, sessionId: "s", scope: { kind: "user", key: `slack:${userId}` } }, fn);
+  const history = (channel: string) => slackTool.execute!({ action: "history", channel } as any, { toolCallId: "t", messages: [] });
+  try {
+    assert.match(String(await as("UALICE", () => history("CPUB"))), /hello/);
+    assert.match(String(await as("UALICE", () => history("CPRIV"))), /hello/, "member of the private channel");
+    assert.match(String(await as("UBOB", () => history("CPRIV"))), /isn't visible/);
+    assert.match(String(await as("UALICE", () => history("DALICE"))), /hello/, "own DM");
+    assert.match(String(await as("UALICE", () => history("DBOB"))), /isn't visible/, "someone else's DM");
+    await as("UALICE", () => slackTool.execute!({ action: "channels" } as any, { toolCallId: "t", messages: [] }));
+    assert.equal(listedTypes, "public_channel");
+  } finally {
+    setTrustConfig({ sessionMode: "shared", operatorUsers: [] });
+    setSlackWebClient(null);
+  }
+});

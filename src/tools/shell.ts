@@ -1,4 +1,4 @@
-import { exec, spawn } from "child_process";
+import { exec, execFile, spawn } from "child_process";
 
 export interface ShellExecResult {
   stdout: string;
@@ -27,6 +27,26 @@ export async function shellExec(command: string, options?: { timeout?: number; m
         code: error?.code ?? (error ? 1 : 0),
         killed: !!error?.killed,
         error: error?.killed ? undefined : undefined,
+      });
+    });
+  });
+}
+
+/** Run a program with arguments, no shell (e.g. a sandbox wrapper). */
+export async function argvExec(file: string, args: string[], options?: { timeout?: number; maxOutput?: number }): Promise<ShellExecResult> {
+  const timeout = options?.timeout ?? 120000;
+  const maxOutput = options?.maxOutput ?? MAX_OUTPUT_CHARS;
+  return new Promise<ShellExecResult>((resolve) => {
+    execFile(file, args, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error: any, stdout, stderr) => {
+      let out = stdout || "";
+      if (out.length > maxOutput) {
+        out = out.slice(0, maxOutput) + `\n\n[output truncated: ${out.length} chars, showing first ${maxOutput}]`;
+      }
+      resolve({
+        stdout: out,
+        stderr: stderr || "",
+        code: typeof error?.code === "number" ? error.code : (error ? 1 : 0),
+        killed: !!error?.killed,
       });
     });
   });

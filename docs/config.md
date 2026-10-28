@@ -52,7 +52,11 @@ The main config file. Committed to git. Unknown top-level fields are warned on s
 | `userAliases` | `{}` | Per-user mode: map `"<interface>:<userId>"` to a shared key, e.g. `{"slack:U123": "nick", "telegram:456": "nick"}`, so one person's DMs on several platforms share a session. |
 | `userToolScope` | `""` | Per-user mode: tool scope for user sessions (`full`, `write`, `read`). Empty = `write` when `toolScope` is `full` (no shell), else `toolScope`. See [Sessions](sessions.md#who-can-reach-what). |
 | `groupToolScope` | `""` | Per-user mode: tool scope for core-session turns not started by the operator (group channels, heartbeats, inbox reviews). Same default as `userToolScope`. Operator turns (web UI, TUI, CLI) always use `toolScope`. |
-| `untrustedTools` | `[]` | Per-user mode: plugin tools (e.g. `"slack"`, MCP `"<server>__<tool>"`) that untrusted turns may use. Platform and MCP tools are operator-only otherwise. See [Sessions](sessions.md#who-can-reach-what). |
+| `untrustedTools` | `[]` | Per-user mode: plugin tools (e.g. `"slack"`, MCP `"<server>__<tool>"`) that untrusted turns may use. Slack, Matrix and MCP tools are available anyway (Slack and Matrix are limited to what the person asking can see). See [Sessions](sessions.md#who-can-reach-what). |
+| `untrustedDeniedTools` | `[]` | Per-user mode: tools untrusted turns never get, e.g. an MCP server that can read local files. |
+| `untrustedShell` | `"sandbox"` | Per-user mode: `"sandbox"` gives untrusted turns `bash` inside a bubblewrap sandbox that hides other users' memory, `.kern/` and `.git/` and clears secrets from the environment; `"off"` gives them no shell. See [Sessions](sessions.md#who-can-reach-what). |
+| `untrustedShellEnv` | `[]` | Per-user mode: environment variable names passed into the sandboxed shell. |
+| `untrustedShellHide` | `[]` | Per-user mode: extra directories hidden from the sandboxed shell. |
 | `operatorUsers` | `[]` | Per-user mode: chat accounts trusted like the operator, as user keys (`"slack:U0123"`, or an alias). Their DMs get `toolScope`, full file access and operator-only commands. |
 | `operatorContact` | `""` | Per-user mode: how coworkers reach the operator, e.g. `"@nick on Slack"`. Used in refusals. |
 | `globalReviewOnPropose` | `false` | Per-user mode: wake the core session for a review turn as soon as a user session proposes a global memory change. |
