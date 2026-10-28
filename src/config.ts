@@ -103,6 +103,14 @@ export interface KernConfig extends ModelConnection {
    * may use besides the built-in safe set. See UNTRUSTED_PLUGINS.
    */
   untrustedTools: string[];
+  /**
+   * Chat accounts trusted like the operator, as user keys (`slack:U0123`, or
+   * an alias). Their DMs get toolScope, full file access and operator-only
+   * commands. The web UI, TUI and CLI are always the operator.
+   */
+  operatorUsers: string[];
+  /** How coworkers reach the operator, used in refusals (e.g. "@nick on Slack"). */
+  operatorContact: string;
   /** Wake the core session as soon as a user session proposes a global memory change. */
   globalReviewOnPropose: boolean;
 
@@ -164,6 +172,8 @@ export const configDefaults: KernConfig = {
   userToolScope: "",
   groupToolScope: "",
   untrustedTools: [],
+  operatorUsers: [],
+  operatorContact: "",
   globalReviewOnPropose: false,
 };
 
@@ -205,6 +215,8 @@ const FIELD_TYPES: Record<string, string> = {
   userToolScope: "string",
   groupToolScope: "string",
   untrustedTools: "string[]",
+  operatorUsers: "string[]",
+  operatorContact: "string",
   globalReviewOnPropose: "boolean",
   mcpServers: "object",
 };
@@ -266,13 +278,15 @@ export const UNTRUSTED_PLUGINS = ["recall", "skills", "subagents", "global-memor
  * every file the agent can, including other users' personal memory.
  */
 export function turnToolScope(
-  config: Pick<KernConfig, "sessionMode" | "toolScope" | "userToolScope" | "groupToolScope">,
+  config: Pick<KernConfig, "sessionMode" | "toolScope" | "userToolScope" | "groupToolScope" | "operatorUsers">,
   session: SessionScope,
   iface?: string,
 ): ToolScope {
   if (config.sessionMode !== "per-user") return config.toolScope;
   const restricted = (setting: ToolScope | "") => setting || (config.toolScope === "full" ? "write" : config.toolScope);
-  if (session.kind === "user") return restricted(config.userToolScope);
+  if (session.kind === "user") {
+    return (config.operatorUsers ?? []).includes(session.key) ? config.toolScope : restricted(config.userToolScope);
+  }
   if (iface && OPERATOR_INTERFACES.includes(iface)) return config.toolScope;
   // Group channels, automatic turns, and anything without a known origin.
   return restricted(config.groupToolScope);
@@ -283,9 +297,29 @@ export function turnToolScope(
  * per-user mode only core turns from an operator interface. A turn with no
  * known origin is untrusted.
  */
-export function isOperatorTurn(config: Pick<KernConfig, "sessionMode">, session: SessionScope, iface?: string): boolean {
+export function isOperatorTurn(config: Pick<KernConfig, "sessionMode" | "operatorUsers">, session: SessionScope, iface?: string): boolean {
   if (config.sessionMode !== "per-user") return true;
-  return session.kind === "core" && !!iface && OPERATOR_INTERFACES.includes(iface);
+  if (session.kind === "user") return (config.operatorUsers ?? []).includes(session.key);
+  return !!iface && OPERATOR_INTERFACES.includes(iface);
+}
+
+/**
+ * Session settings are fatal when wrong: a typo must not silently run shared
+ * mode (everyone's DMs in one session) or give untrusted turns a shell (an
+ * unknown tool scope means "full" to getToolsForScope).
+ */
+export function validateSessionConfig(config: KernConfig): void {
+  if (!["shared", "per-user"].includes(config.sessionMode)) {
+    throw new Error(`sessionMode: expected "shared" or "per-user", got "${config.sessionMode}"`);
+  }
+  for (const key of ["userToolScope", "groupToolScope"] as const) {
+    if (config[key] !== "" && !(config[key] in TOOL_SCOPES)) {
+      throw new Error(`${key}: expected "full", "write", "read" or "" (default), got "${config[key]}"`);
+    }
+  }
+  if (config.sessionMode === "per-user" && !(config.toolScope in TOOL_SCOPES)) {
+    throw new Error(`toolScope: expected "full", "write" or "read", got "${config.toolScope}"`);
+  }
 }
 
 /** Model configuration errors are fatal: never silently select a different route. */
@@ -346,6 +380,7 @@ export function parseConfig(userConfig: unknown): KernConfig {
   }
   const config = { ...configDefaults, ...cleaned };
   validateModelConfig(config);
+  validateSessionConfig(config);
   return config;
 }
 

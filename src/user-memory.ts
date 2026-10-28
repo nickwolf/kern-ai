@@ -1,5 +1,5 @@
 import { readdir } from "fs/promises";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, realpathSync, statSync } from "fs";
 import { join, resolve, relative, isAbsolute, dirname, basename } from "path";
 import { createHash } from "crypto";
 import type { KernConfig } from "./config.js";
@@ -46,13 +46,39 @@ export function globalInboxDir(agentDir: string): string {
   return join(agentDir, ".kern", "global-inbox");
 }
 
-// macOS and Windows filesystems are usually case-insensitive: USERS/x is users/x.
-const CASE_INSENSITIVE = process.platform === "win32" || process.platform === "darwin";
+const caseInsensitiveCache = new Map<string, boolean>();
 
-function isInside(parent: string, child: string): boolean {
-  const rel = CASE_INSENSITIVE ? relative(parent.toLowerCase(), child.toLowerCase()) : relative(parent, child);
+/**
+ * Whether the filesystem holding the agent dir ignores case (USERS/x is
+ * users/x). Decided by the filesystem itself, not the OS: Linux can mount
+ * case-insensitive filesystems (WSL /mnt/c, casefolded ext4, macOS volumes
+ * in Docker). Checked by looking up .kern as .KERN.
+ */
+function isCaseInsensitive(root: string): boolean {
+  let cached = caseInsensitiveCache.get(root);
+  if (cached === undefined) {
+    try {
+      const a = statSync(join(root, ".kern"));
+      const b = statSync(join(root, ".KERN"));
+      cached = a.ino === b.ino && a.dev === b.dev;
+    } catch (err: any) {
+      // .KERN missing means case matters; no .kern at all means we can't tell.
+      cached = err?.code === "ENOENT" && existsSync(join(root, ".kern"))
+        ? false
+        : process.platform === "win32" || process.platform === "darwin";
+    }
+    caseInsensitiveCache.set(root, cached);
+  }
+  return cached;
+}
+
+function isInside(parent: string, child: string, ignoreCase = false): boolean {
+  const rel = ignoreCase ? relative(parent.toLowerCase(), child.toLowerCase()) : relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+
+/** Files that steer the agent, or git itself. Untrusted turns may not change them. */
+const AGENT_CONFIG = ["AGENTS.md", "IDENTITY.md", "KERN.md", ".gitignore", ".gitattributes", ".gitmodules", "skills"];
 
 /**
  * Absolute path with symlinks resolved, so /proc/self/cwd/..., a symlink into
@@ -85,32 +111,42 @@ function realResolve(base: string, target: string): string {
  *   session may use .kern/global-inbox/; `read` may open a file in
  *   .kern/media/ by name (names are content hashes; listing stays blocked).
  */
-export function isProtectedPath(agentDir: string, scope: SessionScope, target: string, opts: { read?: boolean } = {}): boolean {
+export function isProtectedPath(
+  agentDir: string,
+  scope: SessionScope,
+  target: string,
+  opts: { read?: boolean; reviewer?: boolean; list?: boolean } = {},
+): boolean {
   const root = realResolve(agentDir, ".");
   const abs = realResolve(agentDir, target);
-  if (!isInside(root, abs)) return true;
+  const ci = isCaseInsensitive(root);
+  const inside = (dir: string) => isInside(dir, abs, ci);
+  const same = (p: string) => (ci ? abs.toLowerCase() === p.toLowerCase() : abs === p);
+  if (!inside(root)) return true;
+  // git runs commands named in its config (hooks, filters), and .git/config
+  // often holds a remote URL with a token.
+  if (inside(join(root, ".git"))) return true;
+  if (!opts.read && AGENT_CONFIG.some((name) => inside(join(root, name)))) return true;
   const kernDir = join(root, ".kern");
   // Directories above the protected ones (users/, .kern/ itself, the agent
   // dir) are not protected; searches rooted there are filtered instead.
-  if (isInside(kernDir, abs) && abs !== kernDir) {
-    if (scope.kind === "core" && isInside(join(kernDir, "global-inbox"), abs)) return false;
-    return !(opts.read && dirname(abs) === join(kernDir, "media"));
+  if (inside(kernDir) && !same(kernDir)) {
+    // Proposals are written and settled only through the global-memory
+    // tools; review turns may read them.
+    if (opts.read && opts.reviewer && scope.kind === "core" && inside(join(kernDir, "global-inbox"))
+        && !inside(join(kernDir, "global-inbox", ".origins"))) return false;
+    const mediaFile = ci ? dirname(abs).toLowerCase() === join(kernDir, "media").toLowerCase() : dirname(abs) === join(kernDir, "media");
+    return !(opts.read && !opts.list && mediaFile);
   }
   const usersRoot = join(root, "users");
-  if (!isInside(usersRoot, abs) || abs === usersRoot) return false;
-  return scope.kind === "core" || !isInside(join(usersRoot, userDirName(scope.key)), abs);
+  if (!inside(usersRoot) || same(usersRoot)) return false;
+  return scope.kind === "core" || !inside(join(usersRoot, userDirName(scope.key)));
 }
 
 /** Whether a user session may write `target`: only inside its own memory folder. */
 export function canUserWrite(agentDir: string, key: string, target: string): boolean {
-  return isInside(realResolve(agentDir, userMemoryRelPath(key)), realResolve(agentDir, target));
-}
-
-/** Path at the start of a grep/glob output line ("path:line:text" or a bare path). */
-function outputPath(line: string): string {
-  const plain = stripAnsi(line);
-  const m = plain.match(/^(.*?):\d+[:-]/);
-  return m ? m[1] : plain;
+  const ci = isCaseInsensitive(realResolve(agentDir, "."));
+  return isInside(realResolve(agentDir, userMemoryRelPath(key)), realResolve(agentDir, target), ci);
 }
 
 /**
@@ -143,12 +179,17 @@ function unsafeGrepOptions(options?: string): string[] {
  * Operator turns are not wrapped, and shell tools never reach these turns
  * (see turnToolScope).
  */
-export function guardMemoryTools(tools: Record<string, any>, agentDir: string, scope: SessionScope): Record<string, any> {
+export function guardMemoryTools(
+  tools: Record<string, any>,
+  agentDir: string,
+  scope: SessionScope,
+  opts: { reviewer?: boolean } = {},
+): Record<string, any> {
   const guarded = { ...tools };
   const wrap = (name: string, fn: (original: any) => (args: any, options: unknown) => Promise<unknown>) => {
     if (tools[name]?.execute) guarded[name] = { ...tools[name], execute: fn(tools[name]) };
   };
-  const blocked = (p: string, read = false) => isProtectedPath(agentDir, scope, p, { read });
+  const blocked = (p: string, read = false) => isProtectedPath(agentDir, scope, p, { read, reviewer: opts.reviewer });
   const refuse = (p: string) => `Error: ${p} is not accessible from this session. ` +
     "This session can use files inside the agent directory, except other users' personal memory (users/<user>/) and runtime state (.kern/).";
 
@@ -165,21 +206,43 @@ export function guardMemoryTools(tools: Record<string, any>, agentDir: string, s
       return t.execute(args, options);
     });
   }
-  for (const name of ["glob", "grep"]) {
-    wrap(name, (t) => async (args, options) => {
-      if (args.path && blocked(args.path)) return refuse(args.path);
-      if (name === "grep") {
-        const bad = unsafeGrepOptions(args.options);
-        if (bad.length) return `Error: grep option(s) not allowed in this session: ${bad.join(" ")}. Allowed: -i -w -l -F -E -n -x -A/-B/-C <n>.`;
-      }
-      const out = await t.execute(args, options);
-      if (typeof out !== "string") return out;
-      // glob prints absolute paths; grep prints them relative to the working
-      // directory, which is the agent dir.
-      const kept = out.split("\n").filter((line) => !line || !blocked(outputPath(line)));
-      return kept.some(Boolean) ? kept.join("\n") : (name === "glob" ? "No files matched the pattern." : "No matches found.");
-    });
-  }
+  // Search results are filtered with the read rules, except that listing
+  // .kern/media/ stays blocked.
+  const hidden = (p: string) => isProtectedPath(agentDir, scope, p, { read: true, reviewer: opts.reviewer, list: true });
+  wrap("glob", (t) => async (args, options) => {
+    if (args.path && blocked(args.path, true)) return refuse(args.path);
+    const out = await t.execute(args, options);
+    if (typeof out !== "string") return out;
+    // glob prints one absolute path per line.
+    const kept = out.split("\n").filter((line) => line && !hidden(line));
+    return kept.length ? kept.join("\n") : "No files matched the pattern.";
+  });
+  wrap("grep", (t) => async (args, options) => {
+    if (args.path && blocked(args.path, true)) return refuse(args.path);
+    const bad = unsafeGrepOptions(args.options);
+    if (bad.length) return `Error: grep option(s) not allowed in this session: ${bad.join(" ")}. Allowed: -i -w -l -F -E -n -x -A/-B/-C <n>.`;
+    // -H -Z: every line starts with its file name, ended by a NUL, so the
+    // filter can't be fooled by context lines or odd names. -I: skip binary
+    // files such as .kern/recall.db.
+    const out = await t.execute({ ...args, options: `${args.options ?? ""} -H -Z -I`.trim() }, options);
+    if (typeof out !== "string") return out;
+    // Without the NUL separators the file names can't be checked: pass on
+    // only the tool's own messages, never unchecked results.
+    if (!out.includes("\0")) return /^(No matches found\.|grep tool requires)/.test(out) ? out : "No matches found.";
+    const filesOnly = /(^|\s)-[a-zA-Z]*l|--files-with-matches/.test(args.options ?? "");
+    let kept: string[];
+    if (filesOnly) {
+      kept = stripAnsi(out).split(/\0\n?/).filter((f) => f && !hidden(f.trim()));
+    } else {
+      kept = out.split("\n").filter((line) => {
+        const plain = stripAnsi(line);
+        const nul = plain.indexOf("\0");
+        if (nul < 0) return /^\.\.\. \(\d+ more matches\)$/.test(plain);
+        return !hidden(plain.slice(0, nul));
+      }).map((line) => line.replace("\0", ":"));
+    }
+    return kept.length ? kept.join("\n") : "No matches found.";
+  });
   return guarded;
 }
 
@@ -204,20 +267,23 @@ export function restrictKernTool(tools: Record<string, any>): Record<string, any
   };
 }
 
-const NO_SHELL = "If a request needs a shell, logs or a platform tool you don't have in this turn, say plainly that " +
-  "this conversation doesn't have that access by design, and that the agent's operator can do it from the web UI.";
+function noShell(contact: string): string {
+  const who = contact ? `the agent's operator (${contact})` : "the agent's operator";
+  return "If a request needs a shell, logs or a platform tool you don't have in this turn, say plainly that " +
+    `this conversation doesn't have that access by design, and that ${who} can do it.`;
+}
 
 /**
  * Instructions telling the model which memory it owns in this turn. They
  * override the single-session wording in KERN.md and AGENTS.md.
  */
-export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, scope: SessionScope, operator = false): string | null {
+export function sessionInstructions(config: Pick<KernConfig, "sessionMode" | "operatorContact">, scope: SessionScope, operator = false): string | null {
   if (config.sessionMode !== "per-user") return null;
   if (scope.kind === "core") {
     const lines = [
       "Per-user session mode. This overrides anything in KERN.md or AGENTS.md about having one session or one brain across interfaces.",
       "You are the core session: group channels, the operator's web UI/TUI, heartbeats and reviews run here. Each user's direct messages run in their own private session, in parallel with this one, and you don't see those conversations.",
-      "You are the only writer of global memory (KNOWLEDGE.md, knowledge/, notes/, USERS.md, AGENTS.md, IDENTITY.md). Every user's session reads it, so write only what anyone may see: nothing said in a private channel or in the operator's conversations, and no one's personal details.",
+      "You are the only writer of global memory (KNOWLEDGE.md, knowledge/, notes/, USERS.md). Every user's session reads it, so write only what anyone may see: content from channels marked `public` in their envelope ([via slack, #general (C123), public, ...]) or approved proposals. Treat every other channel as private, keep the operator's conversations out, and record no one's personal details. In USERS.md keep only names and roles, never notes about what someone may see.",
       "Commit memory with commit_memory (it leaves out users/ and .kern/).",
       "User sessions propose global changes into .kern/global-inbox/. Only a user's own session can write there, and only after the user agreed to share, so the sender is never in doubt and users you don't know yet are normal.",
       "When the global inbox has pending proposals:",
@@ -227,7 +293,7 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, sco
     ];
     lines.push(operator
       ? "This turn is the operator's, with full access, including users' personal memory under users/<user>/. Share it only with the operator, never into a channel or global memory."
-      : `Users' personal memory (users/<user>/) and private sessions are not accessible in this turn. ${NO_SHELL}`);
+      : `Users' personal memory (users/<user>/) and private sessions are not accessible in this turn. ${noShell(config.operatorContact ?? "")}`);
     return lines.join("\n");
   }
   const dir = userMemoryRelPath(scope.key);
@@ -241,7 +307,9 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, sco
     "Recall covers this user's own conversations and the shared channels they post in. If they mention something said elsewhere that you can't find, say so rather than guess.",
     "On [heartbeat, scope: user]: update today's note in your notes folder with anything from this conversation worth keeping, message no one, and reply NO_REPLY.",
     "On a [global-inbox] message: it is the outcome of something this user agreed to share. Tell them in a sentence or two whether it was applied or rejected, and why.",
-    NO_SHELL,
+    operator
+      ? "This user is one of the agent's operators: this conversation has full access, including the shell and every user's memory. Share another user's private details only when they ask for them."
+      : noShell(config.operatorContact ?? ""),
   ].join("\n");
 }
 

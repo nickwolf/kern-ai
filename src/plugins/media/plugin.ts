@@ -16,6 +16,11 @@ const MIME_MAP: Record<string, string> = {
 // One sidecar per session: in per-user mode several sessions are live at once.
 const mediaSidecars = new Map<string, MediaSidecar>();
 
+/** Drop an unloaded session's sidecar; it reloads from disk when needed. */
+export function forgetMediaSession(sessionId: string) {
+  mediaSidecars.delete(sessionId);
+}
+
 /**
  * Get the current session's sidecar, creating it lazily if the session wasn't
  * loaded yet when onStartup ran. Resolution must never be skipped for lack of

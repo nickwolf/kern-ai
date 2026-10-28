@@ -256,7 +256,8 @@ export class Runtime {
     // reach, and no operator-only kern actions. The operator's turns are not
     // restricted.
     if (this.config.sessionMode === "per-user" && !this.isOperatorTurn()) {
-      tools = restrictKernTool(guardMemoryTools(tools, this.agentDir, this.scope));
+      const reviewer = currentTurn()?.origin.interface === "system";
+      tools = restrictKernTool(guardMemoryTools(tools, this.agentDir, this.scope, { reviewer }));
     }
     const turnTools = tools;
 

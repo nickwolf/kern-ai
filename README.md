@@ -151,6 +151,8 @@ Nostr ────────┘
 
 Every message carries an envelope (`[via slack, #ops, user: U04ABC, time: ...]`) so the agent knows who is talking and where. DMs are gated by pairing. Shared rooms are open, and the agent stays quiet unless addressed.
 
+For a team agent, [per-user sessions](docs/sessions.md) give each person's DMs their own session while the agent keeps one shared memory.
+
 [Interfaces docs](docs/interfaces.md) · [Pairing](docs/pairing.md) · [Blog: Why your agent needs one session](https://kern-ai.com/blog/why-your-agent-needs-one-session)
 
 ## Sharing artifacts

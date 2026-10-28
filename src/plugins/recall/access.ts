@@ -69,7 +69,7 @@ const channelId = (e: Envelope) => `${e.iface}|${e.channel}`;
 export async function recallAccess(
   source: EnvelopeSource,
   scope: SessionScope,
-  config: Pick<KernConfig, "sessionMode" | "userAliases">,
+  config: Pick<KernConfig, "sessionMode" | "userAliases" | "operatorUsers">,
   iface?: string,
 ): Promise<((r: RecallRange) => boolean) | null> {
   if (config.sessionMode !== "per-user" || isOperatorTurn(config, scope, iface)) return null;

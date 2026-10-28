@@ -134,11 +134,14 @@ export class SlackInterface implements Interface {
       // channel (which would skip the pairing check below).
       let isDM = message.channel_type === "im";
       let channelName = isDM ? `slack-dm:${userId}` : channelId;
+      // "channel" is a public channel; "group" (private) and "mpim" are not.
+      let isPublicChannel = message.channel_type === "channel";
       try {
         const info = await client.conversations.info({ channel: channelId });
         if (info.channel) {
           isDM = isDM || info.channel.is_im || false;
           channelName = isDM ? `slack-dm:${userId}` : `#${info.channel.name || channelId}`;
+          isPublicChannel = !isDM && !info.channel.is_private && !info.channel.is_mpim;
         }
       } catch {}
 
@@ -178,6 +181,7 @@ export class SlackInterface implements Interface {
             channel: channelLabel,
             attachments: attachments.length > 0 ? attachments : undefined,
             isDirect: isDM,
+            isPublicChannel,
           },
           () => {}, // events handled by SSE broadcast in app.ts
         );

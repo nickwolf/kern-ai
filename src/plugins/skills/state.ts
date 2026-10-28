@@ -17,6 +17,11 @@ function current(): Set<string> {
   return set;
 }
 
+/** Drop an unloaded user session's active skills. */
+export function forgetActiveSkills(owner: string) {
+  activeSkillsByOwner.delete(owner);
+}
+
 export function getActiveSkills(): Set<string> {
   return current();
 }

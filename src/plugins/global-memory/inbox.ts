@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile, rename, rm } from "fs/promises";
 import { existsSync } from "fs";
 import { join, basename } from "path";
+import { randomBytes } from "crypto";
 import { globalInboxDir, userDirName } from "../../user-memory.js";
 import type { TurnOrigin } from "../types.js";
 
@@ -17,6 +18,7 @@ export interface Proposal {
 export interface ResolvedProposal {
   from: string;
   target: string;
+  proposed: string;
   origin: TurnOrigin | null;
 }
 
@@ -24,6 +26,8 @@ export interface PendingProposal {
   file: string;
   from: string;
   target: string;
+  /** ISO time it was proposed. */
+  proposed: string;
 }
 
 /**
@@ -42,7 +46,8 @@ export async function writeProposal(agentDir: string, p: Proposal, now = new Dat
   const dir = globalInboxDir(agentDir);
   await mkdir(dir, { recursive: true });
   const stamp = now.toISOString().replace(/[:.]/g, "-");
-  const file = `${stamp}-${userDirName(p.from)}.md`;
+  // Random suffix: two proposals in the same millisecond must not collide.
+  const file = `${stamp}-${userDirName(p.from)}-${randomBytes(3).toString("hex")}.md`;
   const body = [
     "---",
     `from: ${oneLine(p.from)}`,
@@ -78,7 +83,7 @@ export async function listPending(agentDir: string): Promise<PendingProposal[]> 
   for (const file of files) {
     const text = await readFile(join(dir, file), "utf-8").catch(() => "");
     const field = (name: string) => oneLine(text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1] ?? "?");
-    pending.push({ file, from: field("from"), target: field("target") });
+    pending.push({ file, from: field("from"), target: field("target"), proposed: field("proposed") });
   }
   return pending;
 }
@@ -95,13 +100,20 @@ export async function resolveProposal(agentDir: string, file: string, decision: 
   const text = await readFile(path, "utf-8");
   const field = (name: string) => text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1]?.trim();
   const originPath = join(dir, ORIGINS, `${file}.json`);
+  const from = field("from") ?? "unknown";
   let origin: TurnOrigin | null = null;
   if (existsSync(originPath)) {
-    origin = JSON.parse(await readFile(originPath, "utf-8"));
+    try {
+      const parsed = JSON.parse(await readFile(originPath, "utf-8"));
+      // Route the outcome only back to the session that proposed it.
+      if (parsed?.sessionKey === from) origin = parsed;
+    } catch {
+      // unreadable sidecar: settle the proposal without a notice
+    }
     await rm(originPath, { force: true });
   }
   await mkdir(join(dir, "processed"), { recursive: true });
   await writeFile(path, `${text.trimEnd()}\n\n## Decision\n\n${decision} (${now.toISOString()}): ${note.trim()}\n`, "utf-8");
   await rename(path, join(dir, "processed", file));
-  return { from: field("from") ?? "unknown", target: field("target") ?? "?", origin };
+  return { from, target: oneLine(field("target") ?? "?"), proposed: field("proposed") ?? "", origin };
 }

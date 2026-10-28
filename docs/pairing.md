@@ -50,6 +50,8 @@ The agent manages this file — reads it to know who people are, updates it as i
 
 The first person to message the bot on Telegram, Slack, or Matrix is auto-paired as the operator — no code needed, silent. TUI and web users are always the operator — no pairing needed.
 
+In [per-user session mode](sessions.md), pairing only lets someone talk to the agent. Operator trust comes from the web UI, TUI or CLI, or from being listed in `operatorUsers`. Add your own chat account there if you want to keep operator powers in your DMs.
+
 Every subsequent Telegram/Slack/Matrix user goes through the pairing code flow.
 
 ## Approving users

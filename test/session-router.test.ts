@@ -173,3 +173,36 @@ test("Semaphore: releases slots in order", async () => {
   assert.deepEqual(order, [1, 2, 3]);
   assert.equal(sem.getActive(), 0);
 });
+
+test("Semaphore: a waiting normal turn goes before waiting heartbeats", async () => {
+  const sem = new Semaphore(1);
+  const order: string[] = [];
+  let release!: () => void;
+  const first = sem.run(() => new Promise<void>((r) => { release = r; }));
+  const hb = sem.run(async () => { order.push("heartbeat"); }, { low: true });
+  const dm = sem.run(async () => { order.push("dm"); });
+  release();
+  await Promise.all([first, hb, dm]);
+  assert.deepEqual(order, ["dm", "heartbeat"]);
+});
+
+test("router: beforeEvict can keep a route one more round; onEvict sees it go", async () => {
+  const kept: string[] = [];
+  const gone: string[] = [];
+  let allow = false;
+  const router = new SessionRouter({
+    config: perUser({ userSessionIdleMinutes: 1 }),
+    core: fakeRuntime({ kind: "core" }),
+    createRuntime: async (scope) => fakeRuntime(scope),
+    attachQueue: () => {},
+    beforeEvict: (r) => { kept.push(r.key); return allow; },
+    onEvict: (r) => gone.push(r.key),
+  });
+  await router.route({ interface: "slack", userId: "U1", isDirect: true });
+  const later = Date.now() + 2 * 60 * 1000;
+  assert.deepEqual(router.evictIdle(later), []);
+  allow = true;
+  assert.deepEqual(router.evictIdle(later), ["slack:U1"]);
+  assert.deepEqual(kept, ["slack:U1", "slack:U1"]);
+  assert.deepEqual(gone, ["slack:U1"]);
+});

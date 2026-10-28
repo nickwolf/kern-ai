@@ -42,6 +42,12 @@ export interface IncomingMessage {
    * session mode these get their own session; group messages stay on core.
    */
   isDirect?: boolean;
+  /**
+   * True when the platform says anyone in the workspace can see the channel.
+   * Per-user mode marks such channels `public` in the envelope; anything not
+   * known to be public is treated as private.
+   */
+  isPublicChannel?: boolean;
 }
 
 export type MessageHandler = (

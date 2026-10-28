@@ -26,6 +26,8 @@ export interface QueuedMessage {
   attachments?: Attachment[];
   /** One-to-one conversation (DM). Routes to a user session in per-user mode. */
   isDirect?: boolean;
+  /** Channel known to be public (see IncomingMessage). */
+  isPublicChannel?: boolean;
 }
 
 import { log } from "./log.js";

@@ -57,16 +57,20 @@ export function routeKey(msg: RoutableMessage, config: Pick<KernConfig, "session
   return userKey(msg.interface, msg.userId, config.userAliases);
 }
 
-/** Caps how many sessions run a model turn at the same time. */
+/**
+ * Caps how many sessions run a model turn at the same time. Low-priority
+ * turns (heartbeats) get a slot only when no normal turn is waiting.
+ */
 export class Semaphore {
   private active = 0;
   private waiters: (() => void)[] = [];
+  private lowWaiters: (() => void)[] = [];
 
   constructor(private readonly limit: number) {}
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
+  async run<T>(fn: () => Promise<T>, opts: { low?: boolean } = {}): Promise<T> {
     if (this.active >= this.limit) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await new Promise<void>((resolve) => (opts.low ? this.lowWaiters : this.waiters).push(resolve));
     } else {
       this.active++;
     }
@@ -74,7 +78,7 @@ export class Semaphore {
       return await fn();
     } finally {
       // Hand the slot straight to the next waiter, or release it.
-      const next = this.waiters.shift();
+      const next = this.waiters.shift() ?? this.lowWaiters.shift();
       if (next) next();
       else this.active--;
     }
@@ -92,6 +96,10 @@ export interface SessionRouterOptions {
   createRuntime: (scope: SessionScope) => Promise<Runtime>;
   /** Install the queue handler and timeout narrator for a new route. */
   attachQueue: (route: Route) => void;
+  /** Called before unloading an idle route; return false to keep it one more round. */
+  beforeEvict?: (route: Route) => boolean;
+  /** Called after a route is unloaded, to drop per-session state. */
+  onEvict?: (route: Route) => void;
 }
 
 /**
@@ -154,8 +162,8 @@ export class SessionRouter {
   }
 
   /** Run a model turn inside the global concurrency cap. */
-  runTurn<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
+  runTurn<T>(fn: () => Promise<T>, opts: { low?: boolean } = {}): Promise<T> {
+    return this.semaphore.run(fn, opts);
   }
 
   /** Aggregate queue status across every live session. */
@@ -186,8 +194,10 @@ export class SessionRouter {
       const status = route.queue.getStatus();
       if (status.processing || status.pending > 0) continue;
       if (now - route.lastActive < idleMs) continue;
+      if (this.opts.beforeEvict && !this.opts.beforeEvict(route)) continue;
       this.routes.delete(key);
       evicted.push(key);
+      this.opts.onEvict?.(route);
       log("router", `unloaded idle session ${key}`);
     }
     return evicted;

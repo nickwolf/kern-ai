@@ -27,8 +27,11 @@ import { SegmentIndex } from "./segments.js";
 import { logModelRoutes } from "./model.js";
 import { MemoryDB } from "./memory.js";
 import type { QueuedMessage } from "./queue.js";
-import { SessionRouter, CORE_KEY, isPerUserMode, type Route } from "./session-router.js";
+import { SessionRouter, CORE_KEY, isPerUserMode, userKey, type Route } from "./session-router.js";
 import { isLegacySession } from "./session.js";
+import { forgetMediaSession } from "./plugins/media/plugin.js";
+import { forgetContextBounds } from "./plugins/recall/tool.js";
+import { forgetActiveSkills } from "./plugins/skills/state.js";
 import { getStatusData as getStatusDataFn, setQueueStatusFn, setInterfaceStatusFn, setSegmentStatsFn, setPluginStatusFn, type InterfaceStatus } from "./tools/kern.js";
 import { plugins, type PluginContext } from "./plugins/index.js";
 import { formatLocalISO, resolveHostTimezone } from "./util.js";
@@ -38,7 +41,7 @@ import { turnContext, currentTurn, CORE_SCOPE, type SessionScope } from "./turn-
 let _pluginCtx: PluginContext | null = null;
 let _config: KernConfig | null = null;
 
-async function handleSlashCommand(cmd: string, userId: string, iface: string, agentName: string, agentDir: string, runtime: Runtime): Promise<string | null> {
+async function handleSlashCommand(cmd: string, userId: string, iface: string, agentName: string, agentDir: string, runtime: Runtime, operator = true): Promise<string | null> {
   switch (cmd) {
     case "/restart": {
       log("kern", `restart requested by ${userId} via ${iface}`);
@@ -110,6 +113,12 @@ async function handleSlashCommand(cmd: string, userId: string, iface: string, ag
         cmds[cleanCmd] = desc;
       }
       cmds["help"] = "show this help";
+      // Per-user mode: list only what this person can run.
+      if (!operator) {
+        for (const name of Object.keys(cmds)) {
+          if (!USER_COMMANDS.includes(`/${name}`)) delete cmds[name];
+        }
+      }
 
       const lines = ["```yaml", "commands:"];
       for (const [name, desc] of Object.entries(cmds)) {
@@ -262,6 +271,10 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     };
   };
   wireRuntime(runtime);
+  if (isPerUserMode(config)) {
+    const unknown = config.untrustedTools.filter((name) => !(name in pluginTools));
+    if (unknown.length) log.warn("kern", `untrustedTools: no plugin tool named ${unknown.join(", ")} (names are exact, e.g. "slack" or "<server>__<tool>")`);
+  }
 
   // Register plugin routes with server
   const pluginRoutes = loadedPlugins.flatMap((p) => p.routes || []);
@@ -293,7 +306,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     });
 
     route.queue.setHandler(async (msg, getPendingMessages, signal) => {
-      const origin: TurnOrigin = { interface: msg.interface, channel: msg.channel, chatId: msg.chatId, userId: msg.userId, sessionKey: route.key };
+      const origin: TurnOrigin = { interface: msg.interface, channel: msg.channel, chatId: msg.chatId, userId: msg.userId, sessionKey: route.key, isPublicChannel: msg.isPublicChannel };
       const ctx = { origin, sessionId: route.runtime.getSessionId(), scope: route.scope };
       // Waiting for a free slot (maxConcurrentSessions) isn't idleness: keep
       // the queue's idle timer from firing until the turn actually starts.
@@ -305,14 +318,47 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
           // now would overlap whatever the queue started next.
           if (signal.aborted) throw new Error("turn cancelled while waiting for a free slot");
           return turnContext.run(ctx, () => handleTurn(route, msg, getPendingMessages, signal));
-        });
+        }, { low: msg.isHeartbeat });
       } finally {
         clearInterval(keepAlive);
       }
     });
   };
 
-  const router = new SessionRouter({ config, core: runtime, createRuntime, attachQueue });
+  // Per-user mode: a user session active since its last heartbeat gets a
+  // light one, so its personal notes stay current. Enqueued on the route's
+  // queue directly so it doesn't count as user activity.
+  const userHeartbeatAt = new Map<string, number>();
+  const userHeartbeat = (route: Route) => {
+    userHeartbeatAt.set(route.key, Date.now());
+    route.queue.enqueue({
+      text: "[heartbeat, scope: user]",
+      userId: "system",
+      interface: "system",
+      channel: "heartbeat",
+      isHeartbeat: true,
+    }).catch((e: any) => log.error("kern", `heartbeat error (${route.key}): ${e.message}`));
+  };
+  const needsHeartbeat = (route: Route) => route.lastActive > (userHeartbeatAt.get(route.key) ?? 0);
+
+  const router = new SessionRouter({
+    config, core: runtime, createRuntime, attachQueue,
+    // Save notes before an idle session is unloaded; unload it next round.
+    beforeEvict: (route) => {
+      if (!needsHeartbeat(route)) return true;
+      userHeartbeat(route);
+      return false;
+    },
+    onEvict: (route) => {
+      const sessionId = route.runtime.getSessionId();
+      if (sessionId) {
+        forgetMediaSession(sessionId);
+        forgetContextBounds(sessionId);
+      }
+      forgetActiveSkills(route.key);
+      userHeartbeatAt.delete(route.key);
+    },
+  });
   router.startEviction();
   if (isPerUserMode(config) && await isLegacySession(agentDir, runtime.getSessionId())) {
     log.warn("kern", "per-user mode: the core session predates per-user mode and still holds everyone's earlier DMs, " +
@@ -320,11 +366,22 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   }
   setQueueStatusFn(() => router.getStatus());
 
+  // Channel part of the envelope. Per-user mode adds the platform's chat ID,
+  // because channel names repeat (two Discord servers can each have a
+  // #general), and marks channels known to be public. Recall decides who may
+  // see a channel's history from exactly this text.
+  const envelopeChannel = (m: { channel: string; chatId?: string; isPublicChannel?: boolean }) => {
+    if (!m.channel) return "";
+    if (!isPerUserMode(config)) return `, ${m.channel}`;
+    const id = m.chatId && !m.channel.includes(m.chatId) ? ` (${m.chatId})` : "";
+    return `, ${m.channel}${id}${m.isPublicChannel ? ", public" : ""}`;
+  };
+
   const handleTurn = async (route: Route, msg: QueuedMessage, getPendingMessages: () => QueuedMessage[], signal: AbortSignal): Promise<string> => {
     const { runtime } = route;
 
     const time = formatLocalISO(new Date(), envelopeTimezone);
-    const context = `[via ${msg.interface}${msg.channel ? `, ${msg.channel}` : ""}, user: ${msg.userId}, time: ${time}]\n${msg.text}`;
+    const context = `[via ${msg.interface}${envelopeChannel(msg)}, user: ${msg.userId}, time: ${time}]\n${msg.text}`;
 
     // Broadcast incoming to other clients.
     // Messages from /message POST (web, tui) are already broadcast by the server
@@ -352,7 +409,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
       const pending = getPendingMessages();
       return pending.map((p) => ({
         role: "user",
-        content: `[via ${p.interface}${p.channel ? `, ${p.channel}` : ""}, user: ${p.userId}, time: ${formatLocalISO(new Date(), envelopeTimezone)}]\n${p.text}`,
+        content: `[via ${p.interface}${envelopeChannel(p)}, user: ${p.userId}, time: ${formatLocalISO(new Date(), envelopeTimezone)}]\n${p.text}`,
       }));
     });
 
@@ -380,7 +437,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   };
 
   // Helper to enqueue from any interface
-  const enqueueMessage = async (text: string, userId: string, iface: string, channel: string, onEvent?: (e: StreamEvent) => void, attachments?: import("./interfaces/types.js").Attachment[], chatId?: string, isDirect?: boolean) => {
+  const enqueueMessage = async (text: string, userId: string, iface: string, channel: string, onEvent?: (e: StreamEvent) => void, attachments?: import("./interfaces/types.js").Attachment[], chatId?: string, isDirect?: boolean, isPublicChannel?: boolean) => {
     const route = await router.route({ interface: iface, userId, isDirect });
     // Commands (/ or !) bypass the queue — instant response even if queue is busy
     const trimmed = text.trim();
@@ -388,11 +445,14 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
       const canonicalCmd = trimmed.startsWith("!") ? "/" + trimmed.slice(1) : trimmed;
       // Per-user mode: commands that act on the whole agent or show other
       // sessions' activity are the operator's.
-      if (isPerUserMode(config) && !OPERATOR_INTERFACES.includes(iface) && !USER_COMMANDS.includes(canonicalCmd)
+      const operator = !isPerUserMode(config) || OPERATOR_INTERFACES.includes(iface)
+        || config.operatorUsers.includes(userKey(iface, userId, config.userAliases));
+      if (!operator && !USER_COMMANDS.includes(canonicalCmd)
           && (["/restart", "/plugins"].includes(canonicalCmd) || plugins.getCommand(canonicalCmd))) {
-        return `${canonicalCmd} is only available to the operator (web UI, TUI or CLI).`;
+        const who = config.operatorContact ? ` (${config.operatorContact})` : "";
+        return `${canonicalCmd} is only available to the agent's operator${who}.`;
       }
-      const result = await handleSlashCommand(canonicalCmd, userId, iface, agentName, agentDir, route.runtime);
+      const result = await handleSlashCommand(canonicalCmd, userId, iface, agentName, agentDir, route.runtime, operator);
       if (result !== null) {
         server.broadcast({
           type: "command-result" as any,
@@ -403,7 +463,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
         return result;
       }
     }
-    return route.queue.enqueue({ text, userId, interface: iface, channel, chatId, attachments, isDirect }, onEvent);
+    return route.queue.enqueue({ text, userId, interface: iface, channel, chatId, attachments, isDirect, isPublicChannel }, onEvent);
   };
 
   server.setStatusFn(() => {
@@ -431,7 +491,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   // History: return messages from a loaded session (core by default), paginated
   server.setHistoryFn((limit: number, before?: number, session?: string) => {
     const route = router.peek(session || CORE_KEY);
-    if (!route) return [];
+    if (!route) return null;
     const msgs = route.runtime.getMessages();
     const end = before !== undefined ? before : msgs.length;
     const start = Math.max(0, end - limit);
@@ -559,7 +619,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     telegramBot = new TelegramInterface(telegramToken, pairing, config.telegramTools);
     await telegramBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     });
   }
@@ -572,7 +632,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     slackBot = new SlackInterface(slackBotToken, slackAppToken, pairing);
     await slackBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", undefined, msg.attachments, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", undefined, msg.attachments, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     });
   }
@@ -588,7 +648,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // auth failures internally and reports via status/statusDetail.
     await matrixBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     });
   }
@@ -604,7 +664,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // and report via status/statusDetail.
     await nostrBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     });
   }
@@ -620,7 +680,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // start() is non-blocking — retries login with backoff on failure
     await discordBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     }).catch(() => {});
   }
@@ -635,7 +695,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // reports via status/statusDetail.
     await ircBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect, msg.isPublicChannel);
       },
     });
   }
@@ -729,6 +789,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
         interface: origin.interface,
         channel: origin.channel,
         chatId: origin.chatId,
+        isPublicChannel: origin.isPublicChannel,
         isAnnounce: true,
       });
     } catch (err: any) {
@@ -766,7 +827,6 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   }
 
   // Heartbeat — goes through queue as low priority
-  const userHeartbeatAt = new Map<string, number>();
   if (config.heartbeatInterval > 0) {
     const intervalMs = config.heartbeatInterval * 60 * 1000;
     setInterval(async () => {
@@ -780,20 +840,8 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
           sessionKey: CORE_KEY,
         });
 
-        // Per-user mode: user sessions active since their last heartbeat get
-        // one too, so their personal notes stay current. Enqueued on the
-        // route's queue directly so it doesn't count as user activity.
         for (const route of router.all()) {
-          if (route.key === CORE_KEY) continue;
-          if (route.lastActive <= (userHeartbeatAt.get(route.key) ?? 0)) continue;
-          userHeartbeatAt.set(route.key, Date.now());
-          route.queue.enqueue({
-            text: "[heartbeat, scope: user]",
-            userId: "system",
-            interface: "system",
-            channel: "heartbeat",
-            isHeartbeat: true,
-          }).catch((e: any) => log.error("kern", `heartbeat error (${route.key}): ${e.message}`));
+          if (route.key !== CORE_KEY && needsHeartbeat(route)) userHeartbeat(route);
         }
 
         await router.core.queue.enqueue({

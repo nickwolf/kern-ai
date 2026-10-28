@@ -6,16 +6,21 @@ import { currentTurn, CORE_SCOPE } from "../../turn-context.js";
 import { recallAccess } from "./access.js";
 
 let _recallIndex: RecallIndex | null = null;
-let _config: Pick<KernConfig, "sessionMode" | "userAliases"> = { sessionMode: "shared", userAliases: {} };
+let _config: Pick<KernConfig, "sessionMode" | "userAliases" | "operatorUsers"> = { sessionMode: "shared", userAliases: {}, operatorUsers: [] };
 // Context-window bounds per session, so concurrent sessions don't overwrite
 // each other's. The last session to build context is the fallback when a
 // tool runs outside a turn.
 const _contextTrimmed = new Map<string, number>();
 let _lastContextSessionId: string | null = null;
 
-export function setRecallIndex(index: RecallIndex | null, config?: Pick<KernConfig, "sessionMode" | "userAliases">) {
+export function setRecallIndex(index: RecallIndex | null, config?: Pick<KernConfig, "sessionMode" | "userAliases" | "operatorUsers">) {
   _recallIndex = index;
   if (config) _config = config;
+}
+
+/** Drop an unloaded session's context bounds. */
+export function forgetContextBounds(sessionId: string) {
+  _contextTrimmed.delete(sessionId);
 }
 
 export function setContextBounds(sessionId: string, trimmedCount: number) {
@@ -31,8 +36,13 @@ export async function scopedSearch(index: RecallIndex, query: string, limit: num
   const turn = currentTurn();
   const canRead = await recallAccess(index, turn?.scope ?? CORE_SCOPE, _config, turn?.origin.interface);
   if (!canRead) return index.search(query, limit);
-  const results = await index.search(query, limit * 10);
-  return results.filter(canRead).slice(0, limit);
+  // Other sessions' chunks crowd the nearest neighbours as the index grows,
+  // so widen the search until enough readable hits turn up or it runs out.
+  for (let k = limit * 10; ; k *= 4) {
+    const results = await index.search(query, k);
+    const readable = results.filter(canRead);
+    if (readable.length >= limit || results.length < k || k >= 4000) return readable.slice(0, limit);
+  }
 }
 
 export const recallTool = tool({

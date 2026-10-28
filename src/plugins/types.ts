@@ -22,6 +22,8 @@ export interface TurnOrigin {
   userId: string;
   /** Session the turn ran in ("core" or a user key), so completions return to it. */
   sessionKey?: string;
+  /** Channel known to be public, so completions keep the same envelope. */
+  isPublicChannel?: boolean;
 }
 
 /**

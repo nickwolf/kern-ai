@@ -27,7 +27,7 @@ export class AgentServer {
   private clients: SSEClient[] = [];
   private onMessage: ((text: string, userId: string, iface: string, channel: string, attachments?: Attachment[], isDirect?: boolean) => Promise<void>) | null = null;
   private statusFn: (() => any | Promise<any>) | null = null;
-  private historyFn: ((limit: number, before?: number, session?: string) => any[]) | null = null;
+  private historyFn: ((limit: number, before?: number, session?: string) => any[] | null) | null = null;
   private segmentsFn: ((sessionId?: string) => any) | null = null;
   private contextSegmentsFn: (() => any | Promise<any>) | null = null;
   private systemPromptFn: ((session?: string) => any | Promise<any>) | null = null;
@@ -68,7 +68,7 @@ export class AgentServer {
     this.commandsFn = fn;
   }
 
-  setHistoryFn(fn: (limit: number, before?: number) => any[]) {
+  setHistoryFn(fn: (limit: number, before?: number, session?: string) => any[] | null) {
     this.historyFn = fn;
   }
 
@@ -365,7 +365,13 @@ export class AgentServer {
       const limit = parseInt(params.get("limit") || "50", 10);
       const beforeStr = params.get("before");
       const before = beforeStr ? parseInt(beforeStr, 10) : undefined;
-      const history = this.historyFn ? this.historyFn(limit, before, params.get("session") || undefined) : [];
+      const session = params.get("session") || undefined;
+      const history = this.historyFn ? this.historyFn(limit, before, session) : [];
+      if (history === null) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `session ${session} is not loaded (it unloads when idle); its transcript is in .kern/sessions/` }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(history));
       return;

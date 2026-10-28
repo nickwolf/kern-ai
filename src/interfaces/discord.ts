@@ -3,6 +3,7 @@ import {
   GatewayIntentBits,
   Partials,
   ChannelType,
+  PermissionFlagsBits,
   type Message as DiscordMessage,
   type TextBasedChannel,
 } from "discord.js";
@@ -243,6 +244,9 @@ export class DiscordInterface implements Interface {
               channel: channelLabel,
               attachments: attachments.length > 0 ? attachments : undefined,
               isDirect: isDM,
+              // Public: everyone in the server can view the channel.
+              isPublicChannel: !isDM && !!message.guild &&
+                !!(message.channel as any).permissionsFor?.(message.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel),
             },
             async (event) => {
               if (event.type === "text-delta") {
