@@ -74,7 +74,7 @@ export const recallPlugin: KernPlugin = {
 
     try {
       recallIndex = new RecallIndex(ctx.db, ctx.agentDir, ctx.config);
-      setRecallIndex(recallIndex);
+      setRecallIndex(recallIndex, ctx.config);
 
       // Rebuild every stored chunk, including inactive sessions, before tail backfill.
       const sessionId = ctx.sessionId();

@@ -36,6 +36,16 @@ export function userKey(iface: string, userId: string, aliases: Record<string, s
   return aliases[raw] || raw;
 }
 
+/** The `<interface>:<userId>` accounts that map to a user key. */
+export function userIdentities(key: string, aliases: Record<string, string> = {}): { iface: string; userId: string }[] {
+  const raws = Object.entries(aliases).filter(([, v]) => v === key).map(([k]) => k);
+  if (key.includes(":") && !(key in aliases)) raws.push(key);
+  return raws.map((raw) => {
+    const i = raw.indexOf(":");
+    return { iface: raw.slice(0, i), userId: raw.slice(i + 1) };
+  });
+}
+
 /**
  * Which session a message belongs to. Only direct messages from a real user
  * get their own session, and only in per-user mode. Group channels, heartbeats

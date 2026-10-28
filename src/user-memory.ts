@@ -4,6 +4,7 @@ import { join, resolve, relative, isAbsolute } from "path";
 import type { KernConfig } from "./config.js";
 import { readSessionOwner } from "./session.js";
 import type { SessionScope } from "./turn-context.js";
+import { stripAnsi } from "./util.js";
 
 /**
  * Per-user memory layout (per-user session mode only):
@@ -39,6 +40,19 @@ function isInside(parent: string, child: string): boolean {
 }
 
 /**
+ * Whether `target` lies in personal memory the scope may not see: any user's
+ * folder for the core session, any other user's folder for a user session.
+ */
+export function isForeignPersonalMemory(agentDir: string, scope: SessionScope, target: string): boolean {
+  const abs = resolve(agentDir, target);
+  const usersRoot = resolve(agentDir, "users");
+  // A path above users/ (e.g. the agent dir itself) is not personal memory;
+  // searches rooted there are filtered by guardMemoryTools instead.
+  if (!isInside(usersRoot, abs) || abs === usersRoot) return false;
+  return scope.kind === "core" || !isInside(resolve(userMemoryDir(agentDir, scope.key)), abs);
+}
+
+/**
  * Whether a user session may write `target`. Inside the agent directory only
  * the user's own memory directory is writable; everything else there is
  * global memory or runtime state. Paths outside the agent dir are allowed.
@@ -49,27 +63,53 @@ export function canUserWrite(agentDir: string, key: string, target: string): boo
   return isInside(resolve(userMemoryDir(agentDir, key)), abs);
 }
 
-const GUARDED_TOOLS = ["write", "edit"];
+/** Path at the start of a grep/glob output line ("path:line:text" or a bare path). */
+function outputPath(line: string): string {
+  const plain = stripAnsi(line);
+  const m = plain.match(/^(.*?):\d+:/);
+  return m ? m[1] : plain;
+}
 
 /**
- * Wrap file-writing tools so a user session can't edit global memory. `bash`
- * is not guarded; use userToolScope to take it away from user sessions.
+ * Wrap file tools so each session only sees personal memory it owns:
+ * - read/write/edit refuse paths in other users' folders (all users' folders
+ *   for the core session), and a user session writes nothing else inside the
+ *   agent dir; global memory is the core's
+ * - glob/grep drop result lines from those folders, since a search rooted at
+ *   the agent dir walks into users/
+ * `bash` is not guarded; use userToolScope to take it away from user sessions.
  */
-export function guardUserTools(tools: Record<string, any>, agentDir: string, key: string): Record<string, any> {
+export function guardMemoryTools(tools: Record<string, any>, agentDir: string, scope: SessionScope): Record<string, any> {
   const guarded = { ...tools };
-  for (const name of GUARDED_TOOLS) {
-    const original = tools[name];
-    if (!original?.execute) continue;
-    guarded[name] = {
-      ...original,
-      execute: async (args: { path: string }, options: unknown) => {
-        if (!canUserWrite(agentDir, key, args.path)) {
-          return `Error: ${args.path} is global memory, which only the core session edits. ` +
-            `Write personal memory under ${userMemoryRelPath(key)}/, or use propose_global to suggest a global change.`;
-        }
-        return original.execute(args, options);
-      },
-    };
+  const wrap = (name: string, fn: (original: any) => (args: any, options: unknown) => Promise<unknown>) => {
+    if (tools[name]?.execute) guarded[name] = { ...tools[name], execute: fn(tools[name]) };
+  };
+  const foreign = (p: string) => isForeignPersonalMemory(agentDir, scope, p);
+  const refuse = (p: string) => scope.kind === "core"
+    ? `Error: ${p} is a user's personal memory. Only that user's own session can access it.`
+    : `Error: ${p} is another user's personal memory and is not accessible from this session.`;
+
+  wrap("read", (t) => async (args, options) => foreign(args.path) ? refuse(args.path) : t.execute(args, options));
+  for (const name of ["write", "edit"]) {
+    wrap(name, (t) => async (args, options) => {
+      if (foreign(args.path)) return refuse(args.path);
+      if (scope.kind === "user" && !canUserWrite(agentDir, scope.key, args.path)) {
+        return `Error: ${args.path} is global memory, which only the core session edits. ` +
+          `Write personal memory under ${userMemoryRelPath(scope.key)}/, or use propose_global to suggest a global change.`;
+      }
+      return t.execute(args, options);
+    });
+  }
+  for (const name of ["glob", "grep"]) {
+    wrap(name, (t) => async (args, options) => {
+      if (args.path && foreign(args.path)) return refuse(args.path);
+      const out = await t.execute(args, options);
+      if (typeof out !== "string") return out;
+      // glob prints absolute paths; grep prints them relative to the working
+      // directory, which is the agent dir.
+      const kept = out.split("\n").filter((line) => !line || !foreign(outputPath(line)));
+      return kept.some(Boolean) ? kept.join("\n") : (name === "glob" ? "No files matched the pattern." : "No matches found.");
+    });
   }
   return guarded;
 }
@@ -85,7 +125,7 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, sco
       "- Review each one. Apply it to the right global file if it is accurate and useful to everyone; otherwise reject it.",
       "- Never copy one user's private details into global memory.",
       "- Commit your changes, then move the proposal into .kern/global-inbox/processed/ (rejected ones too, with a one-line reason appended).",
-      "Personal memory lives under users/<user>/. Leave it to its user's session.",
+      "Personal memory under users/<user>/ and users' private sessions are not readable from here: they belong to each user's own session.",
     ].join("\n");
   }
   const dir = userMemoryRelPath(scope.key);
@@ -95,18 +135,18 @@ export function sessionInstructions(config: Pick<KernConfig, "sessionMode">, sco
     "Write what you learn about this user and your work with them there.",
     "Global memory (KNOWLEDGE.md, knowledge/, notes/ and the other root files) is read-only here. It is shared by everyone and kept by the core session, and it may change between your turns.",
     "When you learn something everyone should know, call propose_global. Never propose this user's private details.",
+    "Recall covers this user's own conversations and the shared channels they take part in.",
   ].join("\n");
 }
 
 // Session owners never change, so a lookup is cached for the process lifetime.
 const ownerCache = new Map<string, string>();
 
-/** Session ids a scope may read through recall: its own and the core's. Null = everything. */
-export async function readableSessionIds(agentDir: string, scope: SessionScope): Promise<Set<string> | null> {
-  if (scope.kind === "core") return null;
+/** Owner ("core" or a user key) of every session file on disk. */
+export async function sessionOwners(agentDir: string): Promise<Map<string, string>> {
   const dir = join(agentDir, ".kern", "sessions");
-  const allowed = new Set<string>();
-  if (!existsSync(dir)) return allowed;
+  const owners = new Map<string, string>();
+  if (!existsSync(dir)) return owners;
   for (const f of await readdir(dir)) {
     if (!f.endsWith(".jsonl") || f.endsWith(".media.jsonl")) continue;
     const id = f.slice(0, -".jsonl".length);
@@ -115,7 +155,7 @@ export async function readableSessionIds(agentDir: string, scope: SessionScope):
       owner = await readSessionOwner(join(dir, f));
       ownerCache.set(id, owner);
     }
-    if (owner === "core" || owner === scope.key) allowed.add(id);
+    owners.set(id, owner);
   }
-  return allowed;
+  return owners;
 }

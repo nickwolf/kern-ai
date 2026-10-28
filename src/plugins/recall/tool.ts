@@ -1,18 +1,21 @@
 import { tool } from "ai";
+import type { KernConfig } from "../../config.js";
 import { z } from "zod";
 import type { RecallIndex, RecallResult } from "./recall.js";
 import { currentTurn, CORE_SCOPE } from "../../turn-context.js";
-import { readableSessionIds } from "../../user-memory.js";
+import { recallAccess } from "./access.js";
 
 let _recallIndex: RecallIndex | null = null;
+let _config: Pick<KernConfig, "sessionMode" | "userAliases"> = { sessionMode: "shared", userAliases: {} };
 // Context-window bounds per session, so concurrent sessions don't overwrite
 // each other's. The last session to build context is the fallback when a
 // tool runs outside a turn.
 const _contextTrimmed = new Map<string, number>();
 let _lastContextSessionId: string | null = null;
 
-export function setRecallIndex(index: RecallIndex | null) {
+export function setRecallIndex(index: RecallIndex | null, config?: Pick<KernConfig, "sessionMode" | "userAliases">) {
   _recallIndex = index;
+  if (config) _config = config;
 }
 
 export function setContextBounds(sessionId: string, trimmedCount: number) {
@@ -21,21 +24,14 @@ export function setContextBounds(sessionId: string, trimmedCount: number) {
 }
 
 /**
- * Search limited to the sessions the current turn may read. User sessions
- * (per-user mode) see their own sessions and the core's, never another
- * user's. The vector index can't filter by session, so fetch extra and filter.
+ * Search limited to what the current turn may read (see recallAccess). The
+ * vector index can't filter by session, so fetch extra and filter.
  */
 export async function scopedSearch(index: RecallIndex, query: string, limit: number): Promise<RecallResult[]> {
-  const readable = await readableSessionIds(index.agentDir, currentTurn()?.scope ?? CORE_SCOPE);
-  if (!readable) return index.search(query, limit);
+  const canRead = await recallAccess(index, currentTurn()?.scope ?? CORE_SCOPE, _config);
+  if (!canRead) return index.search(query, limit);
   const results = await index.search(query, limit * 10);
-  return results.filter((r) => readable.has(r.session_id)).slice(0, limit);
-}
-
-/** Whether the current turn may load raw messages from a session. */
-async function canReadSession(index: RecallIndex, sessionId: string): Promise<boolean> {
-  const readable = await readableSessionIds(index.agentDir, currentTurn()?.scope ?? CORE_SCOPE);
-  return !readable || readable.has(sessionId);
+  return results.filter(canRead).slice(0, limit);
 }
 
 export const recallTool = tool({
@@ -81,8 +77,9 @@ export const recallTool = tool({
     try {
       // Load mode
       if (args.sessionId && args.messageStart !== undefined && args.messageEnd !== undefined) {
-        if (!(await canReadSession(_recallIndex, args.sessionId))) {
-          return "That session belongs to another user and is not readable from this session.";
+        const canRead = await recallAccess(_recallIndex, currentTurn()?.scope ?? CORE_SCOPE, _config);
+        if (canRead && !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: Math.max(args.messageStart, args.messageEnd - 1) })) {
+          return "Those messages are not readable from this session (another user's conversation, or a channel this user is not in).";
         }
         return await _recallIndex.loadMessages(args.sessionId, args.messageStart, args.messageEnd);
       }

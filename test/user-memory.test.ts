@@ -4,7 +4,9 @@ import { mkdtemp, mkdir, writeFile, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { configDefaults, type KernConfig } from "../src/config.js";
-import { canUserWrite, guardUserTools, readableSessionIds, sessionInstructions, userDirName } from "../src/user-memory.js";
+import { canUserWrite, guardMemoryTools, isForeignPersonalMemory, sessionOwners, sessionInstructions, userDirName } from "../src/user-memory.js";
+import { recallAccess, parseEnvelopes, type Envelope } from "../src/plugins/recall/access.js";
+import { userIdentities } from "../src/session-router.js";
 import { SessionManager } from "../src/session.js";
 import { loadSystemPrompt } from "../src/context.js";
 import { CORE_SCOPE, type SessionScope } from "../src/turn-context.js";
@@ -43,15 +45,41 @@ test("canUserWrite: only the user's own memory inside the agent dir", () => {
   assert.equal(canUserWrite(agent, "slack:U1", "/tmp/report.txt"), true);
 });
 
-test("guardUserTools blocks global writes and passes personal ones through", async () => {
+test("isForeignPersonalMemory: core sees no user's folder, users see only their own", () => {
+  const agent = "/agents/a";
+  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "users/slack_U1/KNOWLEDGE.md"), true);
+  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "knowledge/net.md"), false);
+  assert.equal(isForeignPersonalMemory(agent, CORE_SCOPE, "users"), false);
+  assert.equal(isForeignPersonalMemory(agent, user("slack:U1"), "users/slack_U1/notes/x.md"), false);
+  assert.equal(isForeignPersonalMemory(agent, user("slack:U1"), "/agents/a/users/slack_U2/KNOWLEDGE.md"), true);
+});
+
+test("guardMemoryTools: user session writes only its own memory", async () => {
   const calls: string[] = [];
   const write = { description: "w", execute: async (args: { path: string }) => { calls.push(args.path); return "ok"; } };
-  const read = { description: "r", execute: async () => "content" };
-  const tools = guardUserTools({ write, read }, "/agents/a", "slack:U1");
-  assert.equal(tools.read, read);
+  const tools = guardMemoryTools({ write }, "/agents/a", user("slack:U1"));
   assert.match(await tools.write.execute({ path: "KNOWLEDGE.md" }, {}), /global memory/);
+  assert.match(await tools.write.execute({ path: "users/slack_U2/KNOWLEDGE.md" }, {}), /another user/);
   assert.equal(await tools.write.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), "ok");
   assert.deepEqual(calls, ["users/slack_U1/KNOWLEDGE.md"]);
+});
+
+test("guardMemoryTools: reads and searches hide other users' memory", async () => {
+  const agent = "/agents/a";
+  const read = { execute: async (args: { path: string }) => `content of ${args.path}` };
+  const glob = { execute: async () => [`${agent}/knowledge/net.md`, `${agent}/users/slack_U1/KNOWLEDGE.md`, `${agent}/users/slack_U2/KNOWLEDGE.md`].join("\n") };
+  const grep = { execute: async () => ["./KNOWLEDGE.md:1:green", "\x1b[35m./users/slack_U2/KNOWLEDGE.md\x1b[0m:1:green"].join("\n") };
+
+  const core = guardMemoryTools({ read, glob, grep }, agent, CORE_SCOPE);
+  assert.match(await core.read.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), /personal memory/);
+  assert.equal(await core.read.execute({ path: "KNOWLEDGE.md" }, {}), "content of KNOWLEDGE.md");
+  assert.equal(await core.glob.execute({ pattern: "**/*.md" }, {}), `${agent}/knowledge/net.md`);
+  assert.equal(await core.grep.execute({ pattern: "green" }, {}), "./KNOWLEDGE.md:1:green");
+  assert.match(await core.grep.execute({ pattern: "green", path: "users/slack_U1" }, {}), /personal memory/);
+
+  const u1 = guardMemoryTools({ read, glob }, agent, user("slack:U1"));
+  assert.equal(await u1.read.execute({ path: "users/slack_U1/KNOWLEDGE.md" }, {}), "content of users/slack_U1/KNOWLEDGE.md");
+  assert.equal(await u1.glob.execute({ pattern: "**/*.md" }, {}), `${agent}/knowledge/net.md\n${agent}/users/slack_U1/KNOWLEDGE.md`);
 });
 
 test("sessionInstructions: nothing in shared mode", () => {
@@ -60,17 +88,57 @@ test("sessionInstructions: nothing in shared mode", () => {
   assert.match(sessionInstructions(perUser, user("slack:U1"))!, /users\/slack_U1/);
 });
 
-test("readableSessionIds: own and core sessions only", async () => {
+test("parseEnvelopes reads interface, channel and user", () => {
+  const text = "[via slack, #general, user: U1, time: 2026-10-28T08:00:00-06:00]\nhello\n[via tui, user: tui, time: 2026-10-28T08:00:00Z]\nhi";
+  assert.deepEqual(parseEnvelopes(text), [
+    { iface: "slack", channel: "#general", userId: "U1" },
+    { iface: "tui", channel: "", userId: "tui" },
+  ]);
+});
+
+test("userIdentities reverses aliases", () => {
+  assert.deepEqual(userIdentities("slack:U1"), [{ iface: "slack", userId: "U1" }]);
+  assert.deepEqual(userIdentities("nick", { "slack:U1": "nick", "telegram:42": "nick" }), [
+    { iface: "slack", userId: "U1" }, { iface: "telegram", userId: "42" },
+  ]);
+});
+
+test("recallAccess: core never sees user sessions; users see own sessions and their channels", async () => {
   await withAgentDir(async (dir) => {
     const core = new SessionManager(dir);
     await core.init();
     await core.create("core-1");
     await new SessionManager(dir, "slack:U1").create("u1");
     await new SessionManager(dir, "slack:U2").create("u2");
+    assert.deepEqual([...(await sessionOwners(dir))].sort(), [["core-1", "core"], ["u1", "slack:U1"], ["u2", "slack:U2"]]);
 
-    assert.equal(await readableSessionIds(dir, CORE_SCOPE), null);
-    assert.deepEqual([...(await readableSessionIds(dir, user("slack:U1")))!].sort(), ["core-1", "u1"]);
-    assert.deepEqual([...(await readableSessionIds(dir, user("slack:U2")))!].sort(), ["core-1", "u2"]);
+    // core-1 messages: 0 = U1 in #general, 1 = U2 in #general, 2 = U2 in #private, 3 = operator on tui, 4 = mixed range
+    const env = (channel: string, userId: string, iface = "slack"): Envelope => ({ iface, channel, userId });
+    const byIndex: Envelope[][] = [
+      [env("#general", "U1")], [env("#general", "U2")], [env("#private", "U2")], [env("", "tui", "tui")], [],
+    ];
+    const source = {
+      agentDir: dir,
+      envelopesInRange: (_s: string, a: number, b: number) => byIndex.slice(a, b + 1).flat(),
+      envelopesFromUser: (_ids: string[], userId: string) => byIndex.flat().filter((e) => e.userId === userId),
+    };
+    const range = (session_id: string, a: number, b = a) => ({ session_id, msg_start: a, msg_end: b });
+    const perUser = { sessionMode: "per-user" as const, userAliases: {} };
+
+    assert.equal(await recallAccess(source, CORE_SCOPE, { sessionMode: "shared", userAliases: {} }), null);
+
+    const coreCan = (await recallAccess(source, CORE_SCOPE, perUser))!;
+    assert.equal(coreCan(range("core-1", 0)), true);
+    assert.equal(coreCan(range("u1", 0)), false);
+
+    const u1 = (await recallAccess(source, user("slack:U1"), perUser))!;
+    assert.equal(u1(range("u1", 0)), true);
+    assert.equal(u1(range("u2", 0)), false);
+    assert.equal(u1(range("core-1", 1)), true, "a channel U1 posted in, even a message by U2");
+    assert.equal(u1(range("core-1", 2)), false, "a channel U1 never posted in");
+    assert.equal(u1(range("core-1", 3)), false, "the operator's TUI conversation");
+    assert.equal(u1(range("core-1", 1, 2)), false, "a range touching any foreign channel");
+    assert.equal(u1(range("core-1", 4)), false, "no envelope, origin unknown");
   });
 });
 

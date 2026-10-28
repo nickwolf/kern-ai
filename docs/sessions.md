@@ -41,13 +41,27 @@ users/<user>/KNOWLEDGE.md  users/<user>/knowledge/  users/<user>/notes/   # pers
 
 **Global memory** is written only by the core session. Every session reads it, and since the system prompt is rebuilt each turn, a user session sees the core's latest edits on its next turn.
 
-**Personal memory** belongs to one user's session. That session's system prompt includes `users/<user>/KNOWLEDGE.md` and the latest note in `users/<user>/notes/`. The `write` and `edit` tools refuse any path inside the agent directory outside the user's own folder. `bash` is not guarded, so set `userToolScope: "write"` if user sessions must not touch global files at all.
+**Personal memory** belongs to one user's session, and only that session can see it. Its system prompt includes `users/<user>/KNOWLEDGE.md` and the latest note in `users/<user>/notes/`. In per-user mode, the file tools enforce this for every session:
+
+- `read`, `write` and `edit` refuse paths in other users' folders, and the core session can't open any of them. Group channels run in the core session, so nobody in a channel can get at one person's memory.
+- `glob` and `grep` drop results from those folders.
+- A user session can't write anywhere else inside the agent directory, because global memory is the core's.
+
+`bash` is not guarded, so set `userToolScope: "write"` if user sessions must not touch other files at all. The core session usually needs `bash`, so keep personal memory out of reach of shell commands you run there.
 
 **Proposals.** When a user session learns something everyone should know, it calls `propose_global`, which writes a file to `.kern/global-inbox/`. The core session sees pending proposals in its context on every turn, including heartbeats. It applies or rejects each one, commits, and moves it to `processed/`. With `globalReviewOnPropose: true` the core gets a review turn as soon as a proposal arrives instead of at the next heartbeat. `/inbox` lists pending proposals.
 
 **Heartbeats.** The core gets the usual `[heartbeat]`. Each user session active since its last heartbeat gets `[heartbeat, scope: user]` and updates its personal notes.
 
-**Recall.** A user session searches and loads only its own sessions and the core session. The core session can read every session.
+**Recall.**
+
+- **Core session:** searches only core sessions, never a user's private sessions.
+- **User session:** searches its own sessions, plus core-session history from channels that user has posted in. Every message in a hit has to come from such a channel.
+- **Never visible to a user session:**
+  - other users' DMs
+  - channels the user hasn't posted in (silent members included, for now)
+  - the operator's web/TUI conversations
+  - turns whose channel can't be determined
 
 ## Web UI and API
 
@@ -69,3 +83,5 @@ SSE events carry a `sessionKey`. A client sees core events unless it connects wi
 - Turns waiting for a concurrency slot count toward the 5-minute idle timeout.
 - Matrix rooms count as direct only once the agent has seen their member count in a sync.
 - Personal notes have no rolling summary yet; only the latest personal note is injected.
+- Channel membership for recall is inferred from who has posted where, not from the platform's member list.
+- Global notes and knowledge are visible to everyone. The core is told never to copy one person's private details into them.

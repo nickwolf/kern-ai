@@ -8,6 +8,7 @@ import { createEmbeddingModel, isEmbeddingInputTooLong } from "../../model.js";
 import type { ModelMessage } from "ai";
 import type { MemoryDB } from "../../memory.js";
 import type { KernConfig } from "../../config.js";
+import { parseEnvelopes, type Envelope, type EnvelopeSource } from "./access.js";
 
 const MAX_CHUNK_TOKENS = 1000; // rough token limit per chunk
 const EMBED_BATCH_SIZE = 100;
@@ -30,7 +31,7 @@ export interface RecallResult {
   distance: number;
 }
 
-export class RecallIndex {
+export class RecallIndex implements EnvelopeSource {
   private db: MemoryDB["db"];
   private embeddingModel: Parameters<typeof embed>[0]["model"];
   readonly agentDir: string;
@@ -302,6 +303,21 @@ export class RecallIndex {
       msg_end: r.msg_end,
       distance: r.distance,
     }));
+  }
+
+  envelopesInRange(sessionId: string, start: number, end: number): Envelope[] {
+    const rows = this.db.prepare(
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index >= ? AND msg_index <= ?"
+    ).all(sessionId, start, end) as Array<{ content: string }>;
+    return rows.flatMap((r) => parseEnvelopes(r.content));
+  }
+
+  envelopesFromUser(sessionIds: string[], userId: string): Envelope[] {
+    if (sessionIds.length === 0) return [];
+    const rows = this.db.prepare(
+      `SELECT content FROM messages WHERE role = 'user' AND session_id IN (${sessionIds.map(() => "?").join(",")}) AND instr(content, ?) > 0`
+    ).all(...sessionIds, `user: ${userId}, time:`) as Array<{ content: string }>;
+    return rows.flatMap((r) => parseEnvelopes(r.content));
   }
 
   /**
