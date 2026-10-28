@@ -37,6 +37,11 @@ export interface IncomingMessage {
   channel?: string;
   /** Media files attached to the message. */
   attachments?: Attachment[];
+  /**
+   * True for a one-to-one conversation with the agent (a DM). In per-user
+   * session mode these get their own session; group messages stay on core.
+   */
+  isDirect?: boolean;
 }
 
 export type MessageHandler = (

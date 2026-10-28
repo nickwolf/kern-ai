@@ -11,22 +11,26 @@ export interface ServerEvent extends StreamEvent {
   fromChannel?: string;
   fromClientId?: string;
   command?: string;
+  /** Session the event belongs to. Untagged events go to every client. */
+  sessionKey?: string;
 }
 
 type SSEClient = {
   id: string;
   res: ServerResponse;
+  /** Session this client watches (`/events?session=`), default "core". */
+  session: string;
 };
 
 export class AgentServer {
   private server: ReturnType<typeof createServer>;
   private clients: SSEClient[] = [];
-  private onMessage: ((text: string, userId: string, iface: string, channel: string, attachments?: Attachment[]) => Promise<void>) | null = null;
+  private onMessage: ((text: string, userId: string, iface: string, channel: string, attachments?: Attachment[], isDirect?: boolean) => Promise<void>) | null = null;
   private statusFn: (() => any | Promise<any>) | null = null;
-  private historyFn: ((limit: number, before?: number) => any[]) | null = null;
+  private historyFn: ((limit: number, before?: number, session?: string) => any[]) | null = null;
   private segmentsFn: ((sessionId?: string) => any) | null = null;
   private contextSegmentsFn: (() => any | Promise<any>) | null = null;
-  private systemPromptFn: (() => any | Promise<any>) | null = null;
+  private systemPromptFn: ((session?: string) => any | Promise<any>) | null = null;
   private segmentsRebuildFn: (() => Promise<any>) | null = null;
   private segmentsStopFn: (() => void) | null = null;
   private segmentsCleanFn: (() => void) | null = null;
@@ -52,7 +56,7 @@ export class AgentServer {
     this.pluginRoutes = routes;
   }
 
-  setMessageHandler(handler: (text: string, userId: string, iface: string, channel: string, attachments?: Attachment[]) => Promise<void>) {
+  setMessageHandler(handler: (text: string, userId: string, iface: string, channel: string, attachments?: Attachment[], isDirect?: boolean) => Promise<void>) {
     this.onMessage = handler;
   }
 
@@ -174,11 +178,12 @@ export class AgentServer {
     }
   }
 
-  // Broadcast event to all SSE clients (optionally skip one connection)
+  // Broadcast event to SSE clients watching its session (optionally skip one connection)
   broadcast(event: ServerEvent, excludeConnectionId?: string) {
     const data = JSON.stringify(event);
     for (const client of this.clients) {
       if (excludeConnectionId && client.id === excludeConnectionId) continue;
+      if (event.sessionKey && event.sessionKey !== client.session) continue;
       try {
         client.res.write(`data: ${data}\n\n`);
       } catch {
@@ -258,7 +263,8 @@ export class AgentServer {
         try { res.write(":\n\n"); } catch {}
       }, 15000);
 
-      const client: SSEClient = { id: connectionId, res };
+      const session = new URL(rawUrl, "http://localhost").searchParams.get("session") || "core";
+      const client: SSEClient = { id: connectionId, res, session };
       this.clients.push(client);
       const remote = req.socket.remoteAddress || "unknown";
       log("server", `SSE client connected from ${remote} (id=${connectionId}, ${this.clients.length} total)`);
@@ -275,7 +281,7 @@ export class AgentServer {
     if (url === "/message" && req.method === "POST") {
       const body = await readBody(req);
       try {
-        const { text, userId, interface: iface, channel, connectionId, attachments: rawAttachments } = JSON.parse(body);
+        const { text, userId, interface: iface, channel, connectionId, attachments: rawAttachments, isDirect } = JSON.parse(body);
         if (!text && (!rawAttachments || rawAttachments.length === 0)) {
           res.writeHead(400);
           res.end(JSON.stringify({ error: "text or attachments required" }));
@@ -297,8 +303,10 @@ export class AgentServer {
           log("server", `received ${attachments.length} attachment(s) from web`);
         }
 
-        // Broadcast incoming to all OTHER clients (exclude sender)
-        if (!this.isHeartbeat(text || "")) {
+        // Broadcast incoming to all OTHER clients (exclude sender). Direct
+        // messages may route to a user session, so the app broadcasts those
+        // once it knows which session they belong to.
+        if (!isDirect && !this.isHeartbeat(text || "")) {
           const excludeId = connectionId || undefined;
           log("server", `incoming broadcast: interface=${iface || "web"} user=${userId || "tui"} exclude=${excludeId || "none"} clients=${this.clients.length}`);
           const incomingEvent: any = {
@@ -323,7 +331,7 @@ export class AgentServer {
 
         // Handle async — don't await, response already sent
         if (this.onMessage) {
-          this.onMessage(text || "", userId || "tui", iface || "tui", channel || "tui", attachments).catch(() => {});
+          this.onMessage(text || "", userId || "tui", iface || "tui", channel || "tui", attachments, isDirect === true).catch(() => {});
         }
       } catch (err) {
         if (!res.headersSent) {
@@ -357,7 +365,7 @@ export class AgentServer {
       const limit = parseInt(params.get("limit") || "50", 10);
       const beforeStr = params.get("before");
       const before = beforeStr ? parseInt(beforeStr, 10) : undefined;
-      const history = this.historyFn ? this.historyFn(limit, before) : [];
+      const history = this.historyFn ? this.historyFn(limit, before, params.get("session") || undefined) : [];
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(history));
       return;
@@ -373,7 +381,8 @@ export class AgentServer {
 
     // Context system prompt debug dump
     if (url === "/context/system" && req.method === "GET") {
-      const data = this.systemPromptFn ? await this.systemPromptFn() : { system: "" };
+      const session = new URL(rawUrl, "http://localhost").searchParams.get("session") || undefined;
+      const data = this.systemPromptFn ? await this.systemPromptFn(session) : { system: "" };
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(typeof data === "string" ? data : (data.system || ""));
       return;

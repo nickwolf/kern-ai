@@ -96,6 +96,9 @@ export class MatrixInterface implements Interface {
   // Gate pairing-code messages so we only send once per (user, room) per process.
   // Prevents agent-to-agent loops in shared rooms.
   private sentCodes = new Set<string>();
+  // Joined member count per room, from sync summaries. A room with exactly
+  // two members (us and the sender) is treated as a direct conversation.
+  private roomMemberCounts = new Map<string, number>();
 
   constructor(
     homeserver: string,
@@ -429,6 +432,13 @@ export class MatrixInterface implements Interface {
           }
         }
 
+        // Room summaries only arrive when they change (the priming sync has
+        // them all), so record member counts before skipping anything.
+        for (const [roomId, room] of Object.entries(sync.rooms?.join || {})) {
+          const memberCount = room.summary?.["m.joined_member_count"];
+          if (typeof memberCount === "number") this.roomMemberCounts.set(roomId, memberCount);
+        }
+
         // Skip timeline processing on the priming sync — it would replay
         // recent room history as incoming messages. Only events arriving
         // after the cursor is established should be delivered.
@@ -547,6 +557,7 @@ export class MatrixInterface implements Interface {
           interface: "matrix",
           channel: `matrix:${roomId}`,
           attachments: attachments.length > 0 ? attachments : undefined,
+          isDirect: this.roomMemberCounts.get(roomId) === 2,
         },
         async (event) => {
           if (event.type === "text-delta") {
@@ -800,6 +811,7 @@ interface MatrixSync {
     invite?: Record<string, unknown>;
     join?: Record<string, {
       timeline?: { events?: MatrixEvent[] };
+      summary?: { "m.joined_member_count"?: number };
     }>;
   };
 }

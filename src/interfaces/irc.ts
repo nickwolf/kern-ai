@@ -902,7 +902,7 @@ class IrcConnection {
 
     try {
       const response = await this.onMessage(
-        { text, userId, chatId: `${this.host}/${replyTo}`, interface: "irc", channel },
+        { text, userId, chatId: `${this.host}/${replyTo}`, interface: "irc", channel, isDirect: !isChannel },
         () => {}, // no streaming — IRC gets the final text
       );
       if (isNoReply(response)) return;

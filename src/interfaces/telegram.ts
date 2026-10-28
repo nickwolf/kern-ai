@@ -281,6 +281,7 @@ export class TelegramInterface implements Interface {
             interface: "telegram",
             channel: `telegram:${chatId}`,
             attachments: attachments.length > 0 ? attachments : undefined,
+            isDirect: ctx.chat.type === "private",
           },
           (event) => {
             const now = Date.now();

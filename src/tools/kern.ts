@@ -20,11 +20,13 @@ let _usageFile = "";
 let _getSessionStats: (() => SessionStats) | null = null;
 let _reloadFn: (() => Promise<void>) | null = null;
 let _pairingManager: any = null;
-let _getQueueStatus: (() => { processing: boolean; pending: number; activeChannel: string | null }) | null = null;
+/** Queue status across sessions. `sessions`/`running` are set by the session router. */
+export interface QueueStatus { processing: boolean; pending: number; activeChannel: string | null; sessions?: number; running?: number }
+let _getQueueStatus: (() => QueueStatus) | null = null;
 let _getInterfaceStatuses: (() => InterfaceStatus[]) | null = null;
 let _getSegmentStats: (() => { segments: number; level0: number; levels: Record<number, number> } | null) | null = null;
 
-export function setQueueStatusFn(fn: () => { processing: boolean; pending: number; activeChannel: string | null }) {
+export function setQueueStatusFn(fn: () => QueueStatus) {
   _getQueueStatus = fn;
 }
 
@@ -182,8 +184,10 @@ export function getStatusData(): StatusData {
     : null;
 
   const qs = _getQueueStatus ? _getQueueStatus() : null;
+  // Multiple sessions only exist in per-user mode; keep the shared-mode line unchanged.
+  const sessionsStr = qs?.sessions && qs.sessions > 1 ? `, ${qs.sessions} sessions, ${qs.running ?? 0} running` : "";
   const queueStr = qs
-    ? qs.processing ? `busy (${qs.pending} pending)` : `idle (${qs.pending} pending)`
+    ? (qs.processing ? `busy (${qs.pending} pending)` : `idle (${qs.pending} pending)`) + sessionsStr
     : "unknown";
 
   const ifaces = _getInterfaceStatuses ? _getInterfaceStatuses() : [];

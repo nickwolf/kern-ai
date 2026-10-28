@@ -20,6 +20,8 @@ export interface TurnOrigin {
   chatId?: string;
   /** Sender identifier. */
   userId: string;
+  /** Session the turn ran in ("core" or a user key), so completions return to it. */
+  sessionKey?: string;
 }
 
 /**

@@ -24,6 +24,8 @@ export interface QueuedMessage {
   onEvent?: (event: StreamEvent) => void;
   isHeartbeat?: boolean;
   attachments?: Attachment[];
+  /** One-to-one conversation (DM). Routes to a user session in per-user mode. */
+  isDirect?: boolean;
 }
 
 import { log } from "./log.js";

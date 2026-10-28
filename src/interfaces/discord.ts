@@ -242,6 +242,7 @@ export class DiscordInterface implements Interface {
               interface: "discord",
               channel: channelLabel,
               attachments: attachments.length > 0 ? attachments : undefined,
+              isDirect: isDM,
             },
             async (event) => {
               if (event.type === "text-delta") {

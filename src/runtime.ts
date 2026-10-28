@@ -111,7 +111,7 @@ export class Runtime {
 
   async init(): Promise<void> {
     this.config = await loadConfig(this.agentDir);
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
     this.session = new SessionManager(this.agentDir, scopeOwner(this.scope));
     await this.session.init();
     await this.session.load(this.initialSessionId);
@@ -216,7 +216,7 @@ export class Runtime {
     onEvent({ type: "thinking" });
 
     // Reload system prompt (picks up new daily notes, summaries, knowledge changes)
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
 
     // Add user message to session
     const preview = userMessage.slice(0, 80).replace(/\n/g, " ");
@@ -235,7 +235,10 @@ export class Runtime {
 
     // Build tools from scope + plugins
     const tools: Record<string, any> = {};
-    for (const name of getToolsForScope(this.config.toolScope)) {
+    const toolScope = this.scope.kind === "user" && this.config.userToolScope
+      ? this.config.userToolScope
+      : this.config.toolScope;
+    for (const name of getToolsForScope(toolScope)) {
       if (name in allTools) {
         tools[name] = allTools[name as ToolName];
       }
@@ -547,7 +550,7 @@ export class Runtime {
   }
 
   async getSystemPrompt(): Promise<string> {
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions);
+    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope);
     const { system } = await this.buildPromptContext();
     return typeof system === "string" ? system : system.content;
   }

@@ -23,18 +23,18 @@ import { setIrcInterface } from "./plugins/irc/tools.js";
 import { SegmentIndex } from "./segments.js";
 import { logModelRoutes } from "./model.js";
 import { MemoryDB } from "./memory.js";
-import { MessageQueue, type QueuedMessage } from "./queue.js";
+import type { QueuedMessage } from "./queue.js";
+import { SessionRouter, CORE_KEY, type Route } from "./session-router.js";
 import { getStatusData as getStatusDataFn, setQueueStatusFn, setInterfaceStatusFn, setSegmentStatsFn, setPluginStatusFn, type InterfaceStatus } from "./tools/kern.js";
 import { plugins, type PluginContext } from "./plugins/index.js";
 import { formatLocalISO, resolveHostTimezone } from "./util.js";
 import { log } from "./log.js";
-import { turnContext, currentTurn, CORE_SCOPE } from "./turn-context.js";
+import { turnContext, currentTurn, CORE_SCOPE, type SessionScope } from "./turn-context.js";
 
 let _pluginCtx: PluginContext | null = null;
-let _runtime: Runtime | null = null;
 let _config: KernConfig | null = null;
 
-async function handleSlashCommand(cmd: string, userId: string, iface: string, agentName: string, agentDir: string): Promise<string | null> {
+async function handleSlashCommand(cmd: string, userId: string, iface: string, agentName: string, agentDir: string, runtime: Runtime): Promise<string | null> {
   switch (cmd) {
     case "/restart": {
       log("kern", `restart requested by ${userId} via ${iface}`);
@@ -61,7 +61,7 @@ async function handleSlashCommand(cmd: string, userId: string, iface: string, ag
     }
 
     case "/wyd": {
-      const snapshot = _runtime?.getCurrentTurnSnapshot();
+      const snapshot = runtime.getCurrentTurnSnapshot();
       if (!snapshot) {
         return "> Idle — waiting for input.";
       }
@@ -156,7 +156,6 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   }
 
   const runtime = new Runtime(agentDir);
-  _runtime = runtime;
   _config = config;
 
   // Probe embedding model dimensions before creating DB
@@ -237,12 +236,27 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   const loadedPlugins = await plugins.load(pluginCtx);
   setPluginStatusFn(() => plugins.collectStatus(pluginCtx));
 
-  // Register plugin tools and descriptions with runtime
+  // Plugin tools, descriptions and hooks. Every session's runtime gets the
+  // same wiring: the core runtime here, user-session runtimes on creation.
   const pluginTools = plugins.collectTools();
-  if (Object.keys(pluginTools).length > 0) {
-    runtime.addTools(pluginTools);
-  }
-  runtime.setPluginToolDescriptions(plugins.collectToolDescriptions());
+  const pluginToolDescriptions = plugins.collectToolDescriptions();
+  const wireRuntime = (rt: Runtime) => {
+    if (Object.keys(pluginTools).length > 0) {
+      rt.addTools(pluginTools);
+    }
+    rt.setPluginToolDescriptions(pluginToolDescriptions);
+    rt.setContextInjectionFn((info) => plugins.collectContextInjections(info, pluginCtx));
+    rt.onToolResult = (toolName, result, emit) => {
+      plugins.dispatchToolResult(toolName, result, emit, pluginCtx);
+    };
+    rt.onProcessAttachments = (attachments, userMessage) => {
+      return plugins.dispatchProcessAttachments(attachments, userMessage, pluginCtx);
+    };
+    rt.onResolveMessages = (messages) => {
+      return plugins.dispatchResolveMessages(messages, pluginCtx);
+    };
+  };
+  wireRuntime(runtime);
 
   // Register plugin routes with server
   const pluginRoutes = loadedPlugins.flatMap((p) => p.routes || []);
@@ -250,44 +264,42 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     server.setPluginRoutes(pluginRoutes);
   }
 
-  // Wire plugin context injections into runtime
-  runtime.setContextInjectionFn((info) => plugins.collectContextInjections(info, pluginCtx));
-
-  // Wire plugin onToolResult dispatch into runtime
-  runtime.onToolResult = (toolName, result, emit) => {
-    plugins.dispatchToolResult(toolName, result, emit, pluginCtx);
+  // One message queue per session — each serializes its own turns and does
+  // same-channel injection. In shared mode there is only the core session.
+  const createRuntime = async (scope: SessionScope): Promise<Runtime> => {
+    const rt = new Runtime(agentDir, { scope });
+    rt.setMemoryDB(memoryDB);
+    await rt.init();
+    if (segmentIndex) rt.setSegmentIndex(segmentIndex);
+    wireRuntime(rt);
+    return rt;
   };
 
-  // Wire plugin message lifecycle hooks
-  runtime.onProcessAttachments = (attachments, userMessage) => {
-    return plugins.dispatchProcessAttachments(attachments, userMessage, pluginCtx);
+  const attachQueue = (route: Route) => {
+    // Idle-timeout notices get the same narration treatment as step-limit notices
+    // The snapshot is captured before the abort fires — the runtime nulls it on abort.
+    route.queue.setTimeoutNarrator({
+      capture: () => route.runtime.getCurrentTurnSnapshot(),
+      narrate: async (snapshot) => {
+        const { narrateTurnStatus, buildFallbackNarration } = await import("./narration.js");
+        if (!snapshot) return `⏱️ Idle timeout reached. Reply "continue" to resume.`;
+        return narrateTurnStatus("timeout", snapshot, config).catch(() => buildFallbackNarration("timeout", snapshot));
+      },
+    });
+
+    route.queue.setHandler(async (msg, getPendingMessages, signal) => {
+      const origin: TurnOrigin = { interface: msg.interface, channel: msg.channel, chatId: msg.chatId, userId: msg.userId, sessionKey: route.key };
+      const ctx = { origin, sessionId: route.runtime.getSessionId(), scope: route.scope };
+      return router.runTurn(() => turnContext.run(ctx, () => handleTurn(route, msg, getPendingMessages, signal)));
+    });
   };
-  runtime.onResolveMessages = (messages) => {
-    return plugins.dispatchResolveMessages(messages, pluginCtx);
-  };
 
-  // Message queue — serializes messages, same-channel injection
-  const queue = new MessageQueue();
-  setQueueStatusFn(() => queue.getStatus());
+  const router = new SessionRouter({ config, core: runtime, createRuntime, attachQueue });
+  router.startEviction();
+  setQueueStatusFn(() => router.getStatus());
 
-  // Idle-timeout notices get the same narration treatment as step-limit notices
-  // The snapshot is captured before the abort fires — the runtime nulls it on abort.
-  queue.setTimeoutNarrator({
-    capture: () => runtime.getCurrentTurnSnapshot(),
-    narrate: async (snapshot) => {
-      const { narrateTurnStatus, buildFallbackNarration } = await import("./narration.js");
-      if (!snapshot) return `⏱️ Idle timeout reached. Reply "continue" to resume.`;
-      return narrateTurnStatus("timeout", snapshot, config).catch(() => buildFallbackNarration("timeout", snapshot));
-    },
-  });
-
-  queue.setHandler(async (msg, getPendingMessages, signal) => {
-    const origin: TurnOrigin = { interface: msg.interface, channel: msg.channel, chatId: msg.chatId, userId: msg.userId };
-    const ctx = { origin, sessionId: runtime.getSessionId(), scope: runtime.scope };
-    return turnContext.run(ctx, () => handleTurn(msg, getPendingMessages, signal));
-  });
-
-  const handleTurn = async (msg: QueuedMessage, getPendingMessages: () => QueuedMessage[], signal: AbortSignal): Promise<string> => {
+  const handleTurn = async (route: Route, msg: QueuedMessage, getPendingMessages: () => QueuedMessage[], signal: AbortSignal): Promise<string> => {
+    const { runtime } = route;
 
     const time = formatLocalISO(new Date(), envelopeTimezone);
     const context = `[via ${msg.interface}${msg.channel ? `, ${msg.channel}` : ""}, user: ${msg.userId}, time: ${time}]\n${msg.text}`;
@@ -298,14 +310,18 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // (Telegram, Slack) which don't go through the HTTP endpoint.
     // Announce turns never went through the HTTP endpoint, so broadcast
     // them regardless of interface or web/TUI users see a reply to nothing.
+    // The server doesn't broadcast direct HTTP messages either (it can't tag
+    // them with a session), so those are broadcast here too.
+    // Every event carries its sessionKey; SSE clients only see their session's.
     const httpInterfaces = ["web", "tui"];
-    if (!msg.isHeartbeat && (msg.isAnnounce || !httpInterfaces.includes(msg.interface))) {
+    if (!msg.isHeartbeat && (msg.isAnnounce || msg.isDirect || !httpInterfaces.includes(msg.interface))) {
       server.broadcast({
         type: "incoming" as any,
         text: msg.text,
         fromInterface: msg.interface,
         fromUserId: msg.userId,
         fromChannel: msg.channel,
+        sessionKey: route.key,
       });
     }
 
@@ -319,8 +335,8 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     });
 
     const result = await runtime.handleMessage(context, (event: StreamEvent) => {
-      queue.touch(); // stream activity — reset the idle timeout
-      server.broadcast(event);
+      route.queue.touch(); // stream activity — reset the idle timeout
+      server.broadcast({ ...event, sessionKey: route.key });
       msg.onEvent?.(event);
     }, msg.attachments, signal);
 
@@ -342,22 +358,24 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   };
 
   // Helper to enqueue from any interface
-  const enqueueMessage = async (text: string, userId: string, iface: string, channel: string, onEvent?: (e: StreamEvent) => void, attachments?: import("./interfaces/types.js").Attachment[], chatId?: string) => {
+  const enqueueMessage = async (text: string, userId: string, iface: string, channel: string, onEvent?: (e: StreamEvent) => void, attachments?: import("./interfaces/types.js").Attachment[], chatId?: string, isDirect?: boolean) => {
+    const route = await router.route({ interface: iface, userId, isDirect });
     // Commands (/ or !) bypass the queue — instant response even if queue is busy
     const trimmed = text.trim();
     if (trimmed.startsWith("/") || trimmed.startsWith("!")) {
       const canonicalCmd = trimmed.startsWith("!") ? "/" + trimmed.slice(1) : trimmed;
-      const result = await handleSlashCommand(canonicalCmd, userId, iface, agentName, agentDir);
+      const result = await handleSlashCommand(canonicalCmd, userId, iface, agentName, agentDir, route.runtime);
       if (result !== null) {
         server.broadcast({
           type: "command-result" as any,
           text: result,
           command: trimmed,
+          sessionKey: route.key,
         });
         return result;
       }
     }
-    return queue.enqueue({ text, userId, interface: iface, channel, chatId, attachments }, onEvent);
+    return route.queue.enqueue({ text, userId, interface: iface, channel, chatId, attachments, isDirect }, onEvent);
   };
 
   server.setStatusFn(() => {
@@ -378,13 +396,15 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     return cmds;
   });
 
-  server.setMessageHandler(async (text, userId, iface, channel, attachments) => {
-    await enqueueMessage(text, userId, iface, channel, undefined, attachments);
+  server.setMessageHandler(async (text, userId, iface, channel, attachments, isDirect) => {
+    await enqueueMessage(text, userId, iface, channel, undefined, attachments, undefined, isDirect);
   });
 
-  // History: return messages from session, paginated
-  server.setHistoryFn((limit: number, before?: number) => {
-    const msgs = runtime.getMessages();
+  // History: return messages from a loaded session (core by default), paginated
+  server.setHistoryFn((limit: number, before?: number, session?: string) => {
+    const route = router.peek(session || CORE_KEY);
+    if (!route) return [];
+    const msgs = route.runtime.getMessages();
     const end = before !== undefined ? before : msgs.length;
     const start = Math.max(0, end - limit);
     return msgs.slice(start, end).map((m: any, i: number) => ({
@@ -393,8 +413,10 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     }));
   });
 
-  server.setSystemPromptFn(async () => {
-    return { system: await runtime.getSystemPrompt() };
+  server.setSystemPromptFn(async (session?: string) => {
+    const route = router.peek(session || CORE_KEY);
+    if (!route) return { system: "" };
+    return { system: await route.runtime.getSystemPrompt() };
   });
 
   server.setContextSegmentsFn(async () => {
@@ -509,7 +531,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     telegramBot = new TelegramInterface(telegramToken, pairing, config.telegramTools);
     await telegramBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
       },
     });
   }
@@ -522,7 +544,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     slackBot = new SlackInterface(slackBotToken, slackAppToken, pairing);
     await slackBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", undefined, msg.attachments, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", undefined, msg.attachments, msg.chatId, msg.isDirect);
       },
     });
   }
@@ -538,7 +560,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // auth failures internally and reports via status/statusDetail.
     await matrixBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
       },
     });
   }
@@ -554,7 +576,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // and report via status/statusDetail.
     await nostrBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect);
       },
     });
   }
@@ -570,7 +592,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // start() is non-blocking — retries login with backoff on failure
     await discordBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, msg.attachments, msg.chatId, msg.isDirect);
       },
     }).catch(() => {});
   }
@@ -585,7 +607,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     // reports via status/statusDetail.
     await ircBot.start({
       onMessage: async (msg, onEvent) => {
-        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId);
+        return enqueueMessage(msg.text, msg.userId, msg.interface, msg.channel || "", onEvent, undefined, msg.chatId, msg.isDirect);
       },
     });
   }
@@ -672,7 +694,8 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     const target = origin.chatId || origin.userId;
     let reply: string;
     try {
-      reply = await queue.enqueue({
+      const route = await router.get(origin.sessionKey || CORE_KEY);
+      reply = await route.queue.enqueue({
         text,
         userId: origin.userId,
         interface: origin.interface,
@@ -693,6 +716,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
         text: reply,
         fromInterface: origin.interface,
         fromUserId: origin.userId,
+        sessionKey: origin.sessionKey || CORE_KEY,
       });
     } else if (!["web", "tui", "cli", "system"].includes(origin.interface)) {
       log.warn("kern", `announce reply not delivered to ${origin.interface}:${origin.channel}`);
@@ -726,7 +750,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
           text: heartbeatText,
         });
 
-        await queue.enqueue({
+        await router.core.queue.enqueue({
           text: heartbeatText,
           userId: "system",
           interface: "system",
@@ -749,6 +773,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     if (discordBot) await discordBot.stop().catch(() => {});
     if (ircBot) await ircBot.stop().catch(() => {});
     await plugins.shutdown(pluginCtx);
+    router.stop();
     server.stop();
     memoryDB.close();
     await removePidFile(agentDir, process.pid);

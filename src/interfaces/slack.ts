@@ -177,6 +177,7 @@ export class SlackInterface implements Interface {
             interface: "slack",
             channel: channelLabel,
             attachments: attachments.length > 0 ? attachments : undefined,
+            isDirect: isDM,
           },
           () => {}, // events handled by SSE broadcast in app.ts
         );

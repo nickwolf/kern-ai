@@ -6,6 +6,7 @@ import { log } from "./log.js";
 import { validateModelRoutes } from "./model.js";
 
 export type ToolScope = "full" | "write" | "read";
+export type SessionMode = "shared" | "per-user";
 
 export const PROVIDER_IDS = ["openrouter", "anthropic", "openai", "ollama", "openai-compatible"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
@@ -79,6 +80,18 @@ export interface KernConfig extends ModelConnection {
   // everywhere else (logs, recall.db, session metadata) stays UTC.
   timezone: string;
 
+  // Sessions — see docs/sessions.md
+  /** "shared" (default): every channel feeds one session. "per-user": each user's DMs get their own session. */
+  sessionMode: SessionMode;
+  /** Most sessions allowed to run a model turn at once (per-user mode). */
+  maxConcurrentSessions: number;
+  /** Unload a user session after this many idle minutes. 0 keeps it loaded. */
+  userSessionIdleMinutes: number;
+  /** Map `<interface>:<userId>` to a shared key so one person's DMs share a session. */
+  userAliases: Record<string, string>;
+  /** Tool scope for user sessions. Empty means the same as toolScope. */
+  userToolScope: ToolScope | "";
+
   // MCP — Model Context Protocol servers. Agent-local. See docs/mcp.md.
   mcpServers?: Record<string, McpServerConfig>;
 }
@@ -130,6 +143,11 @@ export const configDefaults: KernConfig = {
   stripAnsi: true,
   heartbeatInterval: 60,
   timezone: "",
+  sessionMode: "shared",
+  maxConcurrentSessions: 4,
+  userSessionIdleMinutes: 60,
+  userAliases: {},
+  userToolScope: "",
 };
 
 const FIELD_TYPES: Record<string, string> = {
@@ -163,6 +181,11 @@ const FIELD_TYPES: Record<string, string> = {
   stripAnsi: "boolean",
   heartbeatInterval: "number",
   timezone: "string",
+  sessionMode: "string",
+  maxConcurrentSessions: "number",
+  userSessionIdleMinutes: "number",
+  userAliases: "object",
+  userToolScope: "string",
   mcpServers: "object",
 };
 

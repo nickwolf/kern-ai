@@ -337,6 +337,7 @@ export class NostrInterface implements Interface {
           chatId: sender,
           interface: "nostr",
           channel: `nostr:${sender}`,
+          isDirect: true, // Nostr only carries encrypted DMs
         },
         () => {}, // no streaming/typing in Nostr — final text only
       );

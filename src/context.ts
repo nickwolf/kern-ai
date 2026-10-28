@@ -5,6 +5,7 @@ import { existsSync } from "fs";
 import { log } from "./log.js";
 import { getToolsForScope, type KernConfig } from "./config.js";
 import type { SegmentIndex } from "./segments.js";
+import { CORE_SCOPE, type SessionScope } from "./turn-context.js";
 
 function wrapDocument(pathLabel: string, content: string): string {
   const safePath = pathLabel.replace(/"/g, '&quot;');
@@ -16,7 +17,7 @@ function wrapTools(content: string): string {
 }
 
 // Build the system prompt from agent markdown files + runtime info.
-export async function loadSystemPrompt(agentDir: string, config: KernConfig, pluginToolDescriptions: Record<string, string> = {}): Promise<string> {
+export async function loadSystemPrompt(agentDir: string, config: KernConfig, pluginToolDescriptions: Record<string, string> = {}, scope: SessionScope = CORE_SCOPE): Promise<string> {
   const parts: string[] = [];
 
   // Load AGENTS.md (kernel)
@@ -53,7 +54,7 @@ export async function loadSystemPrompt(agentDir: string, config: KernConfig, plu
   }
 
   // Inject live runtime info
-  const tools = getToolsForScope(config.toolScope);
+  const tools = getToolsForScope(scope.kind === "user" && config.userToolScope ? config.userToolScope : config.toolScope);
   const toolDescriptions: Record<string, string> = {
     bash: "run shell commands",
     pwsh: "run PowerShell commands (Windows)",

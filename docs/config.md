@@ -46,6 +46,11 @@ The main config file. Committed to git. Unknown top-level fields are warned on s
 | `mediaModel` | `""` | Model reference for image descriptions and the `image` tool. An explicit reference is authoritative; otherwise ingest tries the main model and same-provider vision default. |
 | `audioModel` | `""` | Model reference for audio analysis and ingest transcription. Explicit reference is authoritative; otherwise tries main model and same-provider audio default. No implicit cloud fallback. |
 | `mediaContext` | `0` | How many recent turns resolve raw media Buffers to the model. `0` = never send raw binary (text descriptions or placeholders only). Applies to all media types — useful for non-image files like PDFs on models with native support. |
+| `sessionMode` | `"shared"` | `"shared"`: every channel feeds one session. `"per-user"`: each user's direct messages get their own session and queue, so users don't wait on each other. Group channels, web/TUI and heartbeats stay on the core session. See [Sessions](sessions.md). |
+| `maxConcurrentSessions` | `4` | Per-user mode: most sessions allowed to run a model turn at the same time. Others wait for a free slot. |
+| `userSessionIdleMinutes` | `60` | Per-user mode: unload a user session after this many idle minutes. It resumes from disk on the user's next message. `0` keeps sessions loaded. |
+| `userAliases` | `{}` | Per-user mode: map `"<interface>:<userId>"` to a shared key, e.g. `{"slack:U123": "nick", "telegram:456": "nick"}`, so one person's DMs on several platforms share a session. |
+| `userToolScope` | `""` | Per-user mode: tool scope for user sessions (`full`, `write`, `read`). Empty = same as `toolScope`. |
 | `mcpServers` | `{}` | Model Context Protocol servers. Tools namespaced as `<server>__<tool>`. See [MCP](mcp.md). |
 
 ### Tool scopes
