@@ -78,7 +78,7 @@ function isInside(parent: string, child: string, ignoreCase = false): boolean {
 }
 
 /** Files that steer the agent, or git itself. Untrusted turns may not change them. */
-const AGENT_CONFIG = ["AGENTS.md", "IDENTITY.md", "KERN.md", ".gitignore", ".gitattributes", ".gitmodules", "skills"];
+const AGENT_CONFIG = ["AGENTS.md", "IDENTITY.md", "KERN.md", ".gitignore", ".gitattributes", ".gitmodules", "skills", ".agents"];
 
 /**
  * Absolute path with symlinks resolved, so /proc/self/cwd/..., a symlink into
@@ -176,8 +176,8 @@ function unsafeGrepOptions(options?: string): string[] {
  * - glob/grep drop result lines under protected paths, since a search rooted
  *   at the agent dir walks into users/ and .kern/; grep options are limited
  *   to ones that keep file names in the output
- * Operator turns are not wrapped, and shell tools never reach these turns
- * (see turnToolScope).
+ * Operator turns are not wrapped. Untrusted turns' shell runs in the
+ * sandbox (see sandbox.ts).
  */
 export function guardMemoryTools(
   tools: Record<string, any>,
@@ -190,8 +190,10 @@ export function guardMemoryTools(
     if (tools[name]?.execute) guarded[name] = { ...tools[name], execute: fn(tools[name]) };
   };
   const blocked = (p: string, read = false) => isProtectedPath(agentDir, scope, p, { read, reviewer: opts.reviewer });
-  const refuse = (p: string) => `Error: ${p} is not accessible from this session. ` +
-    "This session can use files inside the agent directory, except other users' personal memory (users/<user>/) and runtime state (.kern/).";
+  const refuse = (p: string) => `Error: ${p} is not accessible from this conversation. ` +
+    (scope.kind === "user"
+      ? "It can use files inside the agent directory, except other users' personal memory (users/<user>/), runtime state (.kern/) and .git/."
+      : "It can use files inside the agent directory, except users' personal memory (users/), runtime state (.kern/) and .git/.");
 
   for (const [name, arg] of [["read", "path"], ["pdf", "file"], ["image", "file"], ["audio", "file"]] as const) {
     wrap(name, (t) => async (args, options) => blocked(args[arg], true) ? refuse(args[arg]) : t.execute(args, options));
@@ -249,9 +251,10 @@ export function guardMemoryTools(
 /**
  * Operator-only actions of the kern tool, refused in other turns: `logs`
  * carries previews of every session's messages, `users` lists pending pairing
- * codes, and `pair` approves new users.
+ * codes, `pair` approves new users, and `config` shows MCP credentials and
+ * who is aliased to whom.
  */
-const OPERATOR_KERN_ACTIONS = ["logs", "users", "pair"];
+const OPERATOR_KERN_ACTIONS = ["logs", "users", "pair", "config"];
 
 export function restrictKernTool(tools: Record<string, any>): Record<string, any> {
   const kern = tools.kern;
@@ -269,9 +272,12 @@ export function restrictKernTool(tools: Record<string, any>): Record<string, any
 
 function noShell(contact: string, sandboxed: boolean, scope: SessionScope): string {
   const who = contact ? `the agent's operator (${contact})` : "the agent's operator";
-  const sandbox = !sandboxed ? "" : scope.kind === "user"
-    ? "Your bash runs in a sandbox: other users' memory, .kern/ and .git/ don't exist in it, its environment holds no secrets, and only your memory folder and /tmp are writable. "
-    : "Your bash runs in a sandbox: users' memory, .kern/ and .git/ don't exist in it, its environment holds no secrets, and AGENTS.md, IDENTITY.md, KERN.md and skills/ are read-only. ";
+  const writable = scope.kind === "user" ? "your memory folder" : "knowledge/, notes/, KNOWLEDGE.md and USERS.md";
+  const sandbox = !sandboxed ? "" :
+    `Your bash runs in a sandbox: ${scope.kind === "user" ? "other users'" : "users'"} memory, .kern/, .git/ and the machine's home directory aren't in it, ` +
+    `and its environment holds no secrets. In the agent directory only ${writable} ${scope.kind === "user" ? "is" : "are"} writable. ` +
+    "/tmp is yours and persists between commands (HOME is /tmp/home), so clone, install and build there. " +
+    "There is no git for the agent repo, and attachments people send aren't visible to the shell (use the read, pdf, image or audio tools for those). ";
   return sandbox + `If a request needs ${sandboxed ? "access" : "a shell, logs or a platform tool"} you don't have in this turn, say plainly that ` +
     `this conversation doesn't have that access by design, and that ${who} can do it.`;
 }
@@ -280,6 +286,11 @@ function noShell(contact: string, sandboxed: boolean, scope: SessionScope): stri
  * Instructions telling the model which memory it owns in this turn. They
  * override the single-session wording in KERN.md and AGENTS.md.
  */
+/** Where the per-user rules differ from the templates the model also reads. */
+const OVERRIDES = "These rules override KERN.md and AGENTS.md wherever they differ: one session or one brain across interfaces, " +
+  "running git or committing yourself, editing .kern/config.json, notes in USERS.md about what someone may see, " +
+  "copying media into the repo, and installing skills (only the operator does those).";
+
 export function sessionInstructions(
   config: Pick<KernConfig, "sessionMode" | "operatorContact">,
   scope: SessionScope,
@@ -289,10 +300,10 @@ export function sessionInstructions(
   if (config.sessionMode !== "per-user") return null;
   if (scope.kind === "core") {
     const lines = [
-      "Per-user session mode. This overrides anything in KERN.md or AGENTS.md about having one session or one brain across interfaces.",
+      `Per-user session mode. ${OVERRIDES}`,
       "You are the core session: group channels, the operator's web UI/TUI, heartbeats and reviews run here. Each user's direct messages run in their own private session, in parallel with this one, and you don't see those conversations.",
       "You are the only writer of global memory (KNOWLEDGE.md, knowledge/, notes/, USERS.md). Every user's session reads it, so write only what anyone may see: content from channels marked `public` in their envelope ([via slack, #general (C123), public, ...]) or approved proposals. Treat every other channel as private, keep the operator's conversations out, and record no one's personal details. In USERS.md keep only names and roles, never notes about what someone may see.",
-      "Commit memory with commit_memory (it leaves out users/ and .kern/).",
+      "Commit global memory with commit_memory, which also pushes; don't run git yourself. It leaves out users/ and .kern/.",
       "User sessions propose global changes into .kern/global-inbox/. Only a user's own session can write there, and only after the user agreed to share, so the sender is never in doubt and users you don't know yet are normal.",
       "When the global inbox has pending proposals:",
       "- Read each one once. Judge only its content: apply it to the right global file if it is plausible and useful to everyone; reject it if it is personal, private to a channel, or clearly wrong.",
@@ -306,10 +317,10 @@ export function sessionInstructions(
   }
   const dir = userMemoryRelPath(scope.key);
   return [
-    "Per-user session mode. This overrides anything in KERN.md or AGENTS.md about having one session or one brain across interfaces: what you learn here stays in this conversation and this user's personal memory.",
+    `Per-user session mode. ${OVERRIDES} What you learn here stays in this conversation and this user's personal memory.`,
     `This is a private conversation with one user (${scope.key}). Other coworkers can't see it; the agent's operator can.`,
-    `Your memory for this user is ${dir}/: ${dir}/KNOWLEDGE.md (index), ${dir}/knowledge/ (state), ${dir}/notes/YYYY-MM-DD.md (daily notes, one per day). Write what you learn about this user and your work with them there. It is saved on disk as soon as you write it.`,
-    "Global memory (KNOWLEDGE.md, knowledge/, notes/ and the other root files) is read-only here. It is shared by everyone and kept by the core session, and it may change between your turns.",
+    `Your memory for this user is ${dir}/: ${dir}/KNOWLEDGE.md (index), ${dir}/knowledge/ (state), ${dir}/notes/YYYY-MM-DD.md (daily notes, one per day). Write what you learn about this user and your work with them there. It is saved on disk as soon as you write it and is never committed, so there is nothing to commit.`,
+    ...(operator ? [] : ["Global memory (KNOWLEDGE.md, knowledge/, notes/ and the other root files) is read-only here. It is shared by everyone and kept by the core session, and it may change between your turns."]),
     "To share something everyone should know (a work fact, not anything personal), first quote the exact text to the user and ask if they want it shared. Only after they agree, call propose_global, then tell them it is pending review, not shared yet.",
     "Never pass this conversation to anyone else with the message tool unless the user asks you to.",
     "Recall covers this user's own conversations and the shared channels they post in. If they mention something said elsewhere that you can't find, say so rather than guess.",

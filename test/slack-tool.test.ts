@@ -187,7 +187,7 @@ test("slack tool, per-user mode: untrusted turns reach only what the requester c
       list: async ({ types }: any) => { listedTypes = types; return { ok: true, channels: [] }; },
     },
   } as any);
-  setTrustConfig({ sessionMode: "per-user", operatorUsers: [] });
+  setTrustConfig({ sessionMode: "per-user", operatorUsers: [], userAliases: {} });
   const as = (userId: string, fn: () => Promise<unknown>) =>
     turnContext.run({ origin: { interface: "slack", channel: "dm", userId }, sessionId: "s", scope: { kind: "user", key: `slack:${userId}` } }, fn);
   const history = (channel: string) => slackTool.execute!({ action: "history", channel } as any, { toolCallId: "t", messages: [] });
@@ -200,7 +200,7 @@ test("slack tool, per-user mode: untrusted turns reach only what the requester c
     await as("UALICE", () => slackTool.execute!({ action: "channels" } as any, { toolCallId: "t", messages: [] }));
     assert.equal(listedTypes, "public_channel");
   } finally {
-    setTrustConfig({ sessionMode: "shared", operatorUsers: [] });
+    setTrustConfig({ sessionMode: "shared", operatorUsers: [], userAliases: {} });
     setSlackWebClient(null);
   }
 });

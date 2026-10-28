@@ -5,9 +5,10 @@ import { currentTurn, CORE_SCOPE } from "./turn-context.js";
  * Trust of the turn a tool is running in, for tools that act with the
  * agent's own credentials (Slack, Matrix). Set once at startup.
  */
-let _config: Pick<KernConfig, "sessionMode" | "operatorUsers"> = { sessionMode: "shared", operatorUsers: [] };
+type TrustConfig = Pick<KernConfig, "sessionMode" | "operatorUsers" | "userAliases">;
+let _config: TrustConfig = { sessionMode: "shared", operatorUsers: [], userAliases: {} };
 
-export function setTrustConfig(config: Pick<KernConfig, "sessionMode" | "operatorUsers">) {
+export function setTrustConfig(config: TrustConfig) {
   _config = config;
 }
 

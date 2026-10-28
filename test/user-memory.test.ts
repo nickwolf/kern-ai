@@ -159,11 +159,13 @@ test("turnToolScope / isOperatorTurn: only the operator keeps the shell; unknown
   assert.equal(turnToolScope({ ...configDefaults, toolScope: "full" }, user("slack:U1"), "slack"), "full", "shared mode unchanged");
   assert.equal(turnToolScope(full, CORE_SCOPE, "web"), "full");
   assert.equal(turnToolScope(full, CORE_SCOPE, "tui"), "full");
-  assert.equal(turnToolScope(full, CORE_SCOPE, "slack"), "write", "group channel");
-  assert.equal(turnToolScope(full, CORE_SCOPE, "system"), "write", "heartbeat / review");
-  assert.equal(turnToolScope(full, CORE_SCOPE, undefined), "write", "no known origin");
-  assert.equal(turnToolScope(full, user("slack:U1"), "slack"), "write");
-  assert.equal(turnToolScope(full, user("web:alice"), "web"), "write", "a DM over HTTP is still a user session");
+  // Untrusted turns default to toolScope; for them "full" means the sandboxed shell.
+  assert.equal(turnToolScope(full, CORE_SCOPE, "slack"), "full", "group channel");
+  assert.equal(turnToolScope(full, CORE_SCOPE, "system"), "full", "heartbeat / review");
+  assert.equal(turnToolScope({ ...full, groupToolScope: "write" }, CORE_SCOPE, undefined), "write", "no known origin is a group turn");
+  assert.equal(turnToolScope({ ...full, userToolScope: "write" }, user("slack:U1"), "slack"), "write");
+  assert.equal(isOperatorTurn({ ...perUser, operatorUsers: ["nick"], userAliases: { "slack:UNICK": "nick" } }, user("nick"), "slack"), true, "operatorUsers by alias");
+  assert.equal(isOperatorTurn({ ...perUser, operatorUsers: ["slack:UNICK"], userAliases: { "slack:UNICK": "nick" } }, user("nick"), "slack"), true, "operatorUsers by raw key of an aliased account");
   assert.equal(turnToolScope({ ...full, userToolScope: "full", groupToolScope: "read" }, user("slack:U1"), "slack"), "full");
   assert.equal(turnToolScope({ ...full, groupToolScope: "read" }, CORE_SCOPE, "slack"), "read");
   assert.equal(turnToolScope({ ...perUser, toolScope: "read" }, user("slack:U1"), "slack"), "read");
@@ -178,7 +180,7 @@ test("turnToolScope / isOperatorTurn: only the operator keeps the shell; unknown
 test("sessionInstructions: nothing in shared mode; trust stated per turn", () => {
   assert.equal(sessionInstructions(configDefaults, CORE_SCOPE), null);
   const group = sessionInstructions(perUser, CORE_SCOPE, false)!;
-  assert.match(group, /overrides anything in KERN.md/);
+  assert.match(group, /override KERN.md and AGENTS.md/);
   assert.match(group, /not accessible in this turn/);
   assert.match(sessionInstructions(perUser, CORE_SCOPE, true)!, /operator's, with full access/);
   const dm = sessionInstructions(perUser, user("slack:U1"))!;

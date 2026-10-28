@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
+import { existsSync, statSync, realpathSync } from "fs";
 import { readFile, appendFile } from "fs/promises";
 import { join } from "path";
 import { log } from "../../log.js";
@@ -23,8 +23,31 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
  * users/ to .gitignore and stops tracking files committed there before.
  * Past commits still contain them.
  */
+/**
+ * The agent repo's .git as it was when kern started. Commits run git outside
+ * the sandbox, so they only use a repository the operator set up: a .git
+ * created later (by a sandboxed shell, say) could carry a config that runs
+ * commands.
+ */
+let startupGitDir: string | null = null;
+
+function gitDirAtStartup(agentDir: string): string | null {
+  const dotGit = join(agentDir, ".git");
+  try {
+    return statSync(dotGit).isDirectory() ? realpathSync(dotGit) : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameGitDirAsStartup(agentDir: string): boolean {
+  return startupGitDir !== null && gitDirAtStartup(agentDir) === startupGitDir;
+}
+
 export function keepUsersOutOfGit(agentDir: string): Promise<void> {
+  startupGitDir = gitDirAtStartup(agentDir);
   return serialized(async () => {
+    if (!startupGitDir) return;
     try {
       await git(agentDir, ["rev-parse", "--is-inside-work-tree"]);
     } catch {
@@ -68,6 +91,9 @@ function git(agentDir: string, args: string[], timeout = 30_000) {
  */
 export function commitMemory(agentDir: string, pathspecs: string[], message: string): Promise<string> {
   return serialized(async () => {
+    if (!sameGitDirAsStartup(agentDir)) {
+      return "Nothing committed: the agent directory had no git repository when kern started. The operator can create one and restart.";
+    }
     try {
       await git(agentDir, ["rev-parse", "--is-inside-work-tree"]);
     } catch {

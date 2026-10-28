@@ -135,6 +135,26 @@ Connect to agents from the web UI sidebar:
 2. Enter `http://<host>:4100`
 3. Enter the agent's auth token
 
+## Per-user sessions
+
+In [per-user session mode](sessions.md), coworkers' turns run shell commands in a bubblewrap sandbox. That needs user namespaces inside the container, which Docker's default seccomp profile only allows with `CAP_SYS_ADMIN`. Use the narrow profile that ships with kern, Docker's default plus those calls, instead of turning seccomp off:
+
+```yaml
+services:
+  kern:
+    image: ghcr.io/oguzbilgic/kern-ai:latest
+    security_opt:
+      - seccomp=./docker/seccomp-sandbox.json
+```
+
+Copy `docker/seccomp-sandbox.json` from the kern repo next to your compose file. Then check the agent's log at startup:
+
+- `sandboxed shell ready for untrusted turns`: done.
+- `Creating new namespace failed: Operation not permitted`: AppArmor on the host is blocking it. Add `apparmor=unconfined` to `security_opt`, which loosens the whole container, or allow unprivileged user namespaces on the host (`sysctl kernel.apparmor_restrict_unprivileged_userns=0` on Ubuntu 23.10+).
+- `bubblewrap (bwrap) is not installed`: the image predates sandbox support; rebuild or pull a newer one.
+
+Without the sandbox, coworkers' turns get no shell; everything else works.
+
 ## Building locally
 
 ```bash

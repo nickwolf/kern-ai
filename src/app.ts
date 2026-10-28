@@ -7,7 +7,7 @@ import { MatrixInterface, isMatrixUserId } from "./interfaces/matrix.js";
 import { NostrInterface, parseRelayList } from "./interfaces/nostr.js";
 import { IrcInterface, parseIrcUrls } from "./interfaces/irc.js";
 import { CliInterface } from "./interfaces/cli.js";
-import { loadConfig, saveConfigField, OPERATOR_INTERFACES, type KernConfig } from "./config.js";
+import { loadConfig, saveConfigField, OPERATOR_INTERFACES, isOperatorUser, type KernConfig } from "./config.js";
 
 /** Commands anyone may run in per-user mode; the rest are the operator's. */
 const USER_COMMANDS = ["/help", "/status", "/wyd"];
@@ -274,7 +274,10 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   };
   wireRuntime(runtime);
   setTrustConfig(config);
-  if (isPerUserMode(config) && config.untrustedShell === "sandbox") sandboxReady();
+  if (isPerUserMode(config) && config.untrustedShell === "sandbox") {
+    if (config.toolScope !== "full") log.warn("sandbox", `toolScope is "${config.toolScope}", so there is no shell to sandbox: untrusted turns get no shell`);
+    else sandboxReady();
+  }
   if (isPerUserMode(config)) {
     const unknown = config.untrustedTools.filter((name) => !(name in pluginTools));
     if (unknown.length) log.warn("kern", `untrustedTools: no plugin tool named ${unknown.join(", ")} (names are exact, e.g. "slack" or "<server>__<tool>")`);
@@ -450,7 +453,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
       // Per-user mode: commands that act on the whole agent or show other
       // sessions' activity are the operator's.
       const operator = !isPerUserMode(config) || OPERATOR_INTERFACES.includes(iface)
-        || config.operatorUsers.includes(userKey(iface, userId, config.userAliases));
+        || isOperatorUser(config, userKey(iface, userId, config.userAliases));
       if (!operator && !USER_COMMANDS.includes(canonicalCmd)
           && (["/restart", "/plugins"].includes(canonicalCmd) || plugins.getCommand(canonicalCmd))) {
         const who = config.operatorContact ? ` (${config.operatorContact})` : "";

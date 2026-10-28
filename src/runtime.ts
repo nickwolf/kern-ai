@@ -16,6 +16,9 @@ import { extractText, stripAnsi } from "./util.js";
 import { CORE_SCOPE, scopeOwner, currentTurn, type SessionScope } from "./turn-context.js";
 import { guardMemoryTools, restrictKernTool } from "./user-memory.js";
 import { sandboxedShellEnabled } from "./sandbox.js";
+
+/** Built-in shell tools; the plugin's bash is the one untrusted turns may get, sandboxed. */
+const CORE_SHELLS = ["bash", "pwsh"];
 export type { SessionStats } from "./context.js";
 
 
@@ -245,7 +248,10 @@ export class Runtime {
     // Build tools from scope + plugins
     let tools: Record<string, any> = {};
     const toolScope = this.turnToolScope();
+    const untrusted = this.config.sessionMode === "per-user" && !this.isOperatorTurn();
     for (const name of getToolsForScope(toolScope)) {
+      // Untrusted turns never get an unsandboxed shell (pwsh on Windows).
+      if (untrusted && CORE_SHELLS.includes(name)) continue;
       if (name in allTools) {
         tools[name] = allTools[name as ToolName];
       }
@@ -581,9 +587,9 @@ export class Runtime {
    */
   private pluginToolAllowed(name: string, toolScope: ToolScope): boolean {
     const untrusted = this.config.sessionMode === "per-user" && !this.isOperatorTurn();
-    if (SHELL_PLUGIN_TOOLS.includes(name) && toolScope !== "full") {
-      // Untrusted turns get the shell only inside the sandbox.
-      return untrusted && sandboxedShellEnabled(this.config);
+    if (SHELL_PLUGIN_TOOLS.includes(name)) {
+      // Untrusted turns get the shell only inside the sandbox, and only with "full".
+      return toolScope === "full" && (!untrusted || sandboxedShellEnabled(this.config));
     }
     if (!untrusted) return true;
     if (this.config.untrustedDeniedTools.includes(name)) return false;

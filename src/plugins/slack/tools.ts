@@ -34,8 +34,11 @@ async function channelDenied(client: WebClient, channel: string, requester: stri
       cursor = page.response_metadata?.next_cursor || undefined;
     } while (cursor);
     return deny;
-  } catch {
-    return deny;
+  } catch (err: any) {
+    // Not a membership answer: say what went wrong, and refuse.
+    const code = err?.data?.error || err?.message || "unknown error";
+    if (code === "channel_not_found") return `Error: channel ${channel} not found. Use a channel ID such as C0123ABCD.`;
+    return `Error: couldn't check access to ${channel} (${code}), so it isn't available from this conversation.`;
   }
 }
 
@@ -161,7 +164,8 @@ export const slackTool = tool({
             return `- #${c.name} (${c.id}, ${kind})${memberCount}${topic}`;
           });
 
-          return `Channels (${res.channels.length}):\n${list.join("\n")}`;
+          const note = requester !== null ? "\n(Only public channels are listed in this conversation.)" : "";
+          return `Channels (${res.channels.length}):\n${list.join("\n")}${note}`;
         }
 
         case "user": {

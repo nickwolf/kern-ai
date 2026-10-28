@@ -79,15 +79,17 @@ Every session runs in one process as one OS user. Per-user mode therefore enforc
 Coworkers keep tools that do things. What they lose is any path to another person's memory or conversations.
 
 **Sandboxed shell.** `bash` in untrusted turns runs inside a bubblewrap sandbox:
-- Other users' folders (every user's, for core turns), `.kern/` (transcripts, recall index, `.env` secrets) and `.git/` don't exist inside it.
-- Its environment is cleared, so the auth token and API keys are gone. Only `PATH`, `HOME`, locale and `TZ` are kept, plus any names you list in `untrustedShellEnv`.
-- It gets its own process namespace, so it can't read kern's process.
-- A DM session can write only its own folder and `/tmp`. Core turns can write the agent dir except `AGENTS.md`, `IDENTITY.md`, `KERN.md`, `skills/` and git's files.
-- The network and everything else on the machine stay as they are. Hide more directories (host mounts holding secrets, for example) with `untrustedShellHide`.
+- **Hidden:** other users' folders (every user's, for core turns), `.kern/` (transcripts, recall index, `.env` secrets), `.git/`, and the real home directory (where `kern backup` writes, along with SSH keys and tool credentials) don't exist inside it.
+- **Environment:** cleared, so the auth token and API keys are gone. Only `PATH`, locale and `TZ` are kept, plus any names you list in `untrustedShellEnv`.
+- **Processes:** it gets its own process namespace, so it can't read kern's process.
+- **Writable:** the agent directory is read-only, except a DM's own memory folder, or `knowledge/`, `notes/`, `KNOWLEDGE.md` and `USERS.md` for core turns. Nothing else there (`AGENTS.md`, `skills/`, `.agents/`, git files) can be created or changed.
+- **Scratch space:** `/tmp`, with `HOME` at `/tmp/home`, is a writable scratch area of each session's own that persists between commands, so cloning, installing and building work there.
+- **No git or attachments:** there's no git for the agent repo (core turns commit with `commit_memory`), and attachments aren't visible to the shell; the `read`, `pdf`, `image` and `audio` tools handle those.
+- **Everything else:** the network and the rest of the machine stay as they are. Hide more directories (host mounts holding secrets, for example) with `untrustedShellHide`.
 
-The sandbox needs bubblewrap (the Docker image includes it), Linux, and permission to create namespaces. In Docker, add `security_opt: [seccomp=unconfined, apparmor=unconfined]` to the container, or a seccomp profile that allows `clone`/`unshare` with user namespaces. kern checks at startup. If bubblewrap can't run, it logs why and untrusted turns get no shell. `untrustedShell: "off"` turns the shell off on purpose.
+The sandbox needs Linux, bubblewrap (the Docker image includes it), `toolScope: "full"`, and permission to create user namespaces. In Docker, use the seccomp profile in `docker/seccomp-sandbox.json`, which is Docker's default profile plus the namespace calls bubblewrap needs (see [Docker](docker.md#per-user-sessions)). On hosts where AppArmor blocks it, `apparmor=unconfined` is the fallback, but that loosens the whole container. kern checks at startup and logs either "sandboxed shell ready" or why not; without a sandbox, untrusted turns get no shell. `untrustedShell: "off"` turns the shell off on purpose.
 
-`userToolScope` and `groupToolScope` set the built-in tools for those turns. They default to `write` when `toolScope` is `full`, so the unsandboxed shell stays with the operator. Setting either to `full` gives those turns an unsandboxed shell, which can read every file. A value kern doesn't recognize stops it at startup rather than falling back to full access.
+`userToolScope` and `groupToolScope` (default: `toolScope`) set what those turns get: `full` means the write tools plus the sandboxed shell, `write` means no shell, `read` means read-only tools. Untrusted turns never get an unsandboxed shell, `pwsh` on Windows included. A value kern doesn't recognize stops it at startup rather than falling back to full access.
 
 **MCP** tools are available to everyone; they work on outside services and never reach kern's memory. List any that can read local files (a filesystem server, say) in `untrustedDeniedTools`.
 
@@ -105,11 +107,11 @@ In untrusted turns:
   - `.kern/`, except that files in `.kern/media/` can be opened by name and review turns can read the inbox
   - `.git/`
 
-  They also refuse writes to the files that steer the agent (`AGENTS.md`, `IDENTITY.md`, `KERN.md`, `skills/`, `.gitignore`, `.gitattributes`). Paths are resolved through symlinks, and case is ignored when the filesystem ignores it.
+  They also refuse writes to the files that steer the agent (`AGENTS.md`, `IDENTITY.md`, `KERN.md`, `skills/`, `.agents/`, `.gitignore`, `.gitattributes`). Paths are resolved through symlinks, and case is ignored when the filesystem ignores it.
 - **Search:** `glob` and `grep` drop results from protected places. `grep` accepts only options that keep file names in its output, and it skips binary files.
-- **Platform and MCP tools:** the Slack, Matrix, Discord, Telegram, IRC, OpenRouter and MCP tools act with the agent's own credentials across every conversation; Slack's history, for example, reaches every DM the bot has. They are off unless you name them in `untrustedTools`. Untrusted turns keep recall, skills, sub-agents, dashboards, the memory tools and `message`.
+- **Platform tools:** see above: Slack and Matrix are limited to what the person asking can see, MCP is open, and Discord, Telegram, IRC and OpenRouter need `untrustedTools`.
 - **Sub-agents and background jobs:** they inherit their parent's restrictions, and `subagents`/`jobs` show a session only its own.
-- **Operator-only actions:** `kern logs` (message previews from every session), `kern users`, `kern pair`, and chat commands other than `/help`, `/status` and `/wyd`. `/help` lists only what the person can run, and refusals name `operatorContact` when it's set.
+- **Operator-only actions:** `kern logs` (message previews from every session), `kern config` (MCP credentials), `kern users`, `kern pair`, and chat commands other than `/help`, `/status` and `/wyd`. `/help` lists only what the person can run, and refusals name `operatorContact` when it's set.
 
 ### What is not private
 
@@ -119,13 +121,13 @@ Per-user mode keeps coworkers from reading each other's DMs and personal memory 
 - **The model provider** receives every conversation, as always.
 - **Global memory** (`knowledge/`, `notes/`, `USERS.md`) is shown to every DM session. The core is told to record only content from channels marked `public` and approved proposals, but only the model's instructions enforce that. Recall's channel rules don't apply to these files.
 - **The `message` tool** can post to any chat. A DM session is told not to forward the conversation unless the user asks.
-- **Settings that loosen this:** `userToolScope`/`groupToolScope` set to `full`, or tools added to `untrustedTools`.
+- **Settings that loosen this:** tools added to `untrustedTools`, directories passed through with `untrustedShellEnv` credentials, and the rest of the machine, which the sandbox leaves readable unless you list it in `untrustedShellHide`.
 - **Switching back to shared mode** removes every restriction: all sessions, including past DMs, become one memory again.
 - **History from before per-user mode** stays in the core session (see below).
 
 ## Turning it on for an existing agent
 
-1. **Who is the operator.** The account auto-paired first on Slack or Telegram becomes an ordinary user. Add it to `operatorUsers` to keep operator powers in its DMs, and set `operatorContact` so refusals tell coworkers who to ask.
+1. **Who is the operator.** The account auto-paired first on Slack or Telegram becomes an ordinary user. Add its key (shown by `kern users`, e.g. `slack:U0123`, or its alias) to `operatorUsers` to keep operator powers in its DMs, and set `operatorContact` so refusals tell coworkers who to ask.
 2. **Old DMs.** The core session resumes your existing session, which holds everyone's DMs from before. Group-channel turns can see it and recall it. To start clean, stop the agent and move the latest `.kern/sessions/<id>.jsonl` (and its `.media.jsonl`) out of the directory; recall still indexes it as core history. On startup, kern logs a warning while the core is on a pre-per-user session.
 3. **Shared files.** Every DM session now reads `notes/`, `knowledge/` and `USERS.md`. Remove anything there that shouldn't reach every coworker, including notes in `USERS.md` about what someone may see.
 4. **Shell.** Install bubblewrap and, in Docker, add the `security_opt` lines above, so heartbeats, group channels and DMs keep a (sandboxed) shell. Check the startup log for "sandboxed shell ready". Pass any credentials coworkers' commands need with `untrustedShellEnv`, and hide host mounts that hold secrets with `untrustedShellHide`.
@@ -146,8 +148,8 @@ SSE events carry a `sessionKey`. A client sees core events unless it connects wi
 | `maxConcurrentSessions` | `4` | model turns running at once |
 | `userSessionIdleMinutes` | `60` | unload idle user sessions, `0` = never |
 | `userAliases` | `{}` | merge one person's accounts |
-| `userToolScope` | `""` | tool scope for DM sessions; empty = `write` when `toolScope` is `full` |
-| `groupToolScope` | `""` | tool scope for group-channel and automatic core turns; same default |
+| `userToolScope` | `""` | DM sessions: `full` (sandboxed shell), `write` (no shell), `read`; empty = `toolScope` |
+| `groupToolScope` | `""` | group-channel and automatic core turns; same values and default |
 | `untrustedTools` | `[]` | Discord/Telegram/IRC/OpenRouter tools untrusted turns may use |
 | `untrustedDeniedTools` | `[]` | tools untrusted turns never get (e.g. a filesystem MCP server) |
 | `untrustedShell` | `"sandbox"` | `"sandbox"`: bubblewrap shell for untrusted turns; `"off"`: none |

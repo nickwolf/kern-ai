@@ -90,12 +90,16 @@ export interface KernConfig extends ModelConnection {
   userSessionIdleMinutes: number;
   /** Map `<interface>:<userId>` to a shared key so one person's DMs share a session. */
   userAliases: Record<string, string>;
-  /** Tool scope for user sessions. Empty = "write" when toolScope is "full", else toolScope. */
+  /**
+   * Tool scope for DM sessions: "full" = write tools plus the sandboxed
+   * shell, "write" = no shell, "read" = read-only. Never an unsandboxed
+   * shell. Empty = same as toolScope.
+   */
   userToolScope: ToolScope | "";
   /**
    * Tool scope for core-session turns not started by the operator: group
-   * channels and automatic turns (heartbeat, inbox review). Same default as
-   * userToolScope. Operator turns (web, TUI, CLI) always get toolScope.
+   * channels and automatic turns (heartbeat, inbox review). Same meaning and
+   * default as userToolScope. Operator turns always get toolScope.
    */
   groupToolScope: ToolScope | "";
   /**
@@ -289,20 +293,20 @@ export const UNTRUSTED_PLUGINS = ["recall", "skills", "subagents", "global-memor
 
 /**
  * Tool scope for a turn. Shared mode: toolScope, as always. Per-user mode:
- * the operator's turns on the core session keep toolScope; everyone else
- * (user sessions, group channels, automatic turns) gets the narrower
- * userToolScope/groupToolScope, which default to no shell. A shell reaches
- * every file the agent can, including other users' personal memory.
+ * the operator keeps toolScope; everyone else (DM sessions, group channels,
+ * automatic turns) gets userToolScope/groupToolScope, defaulting to
+ * toolScope. For those turns "full" means the sandboxed shell, never an
+ * unsandboxed one (see runtime.ts pluginToolAllowed and sandbox.ts).
  */
 export function turnToolScope(
-  config: Pick<KernConfig, "sessionMode" | "toolScope" | "userToolScope" | "groupToolScope" | "operatorUsers">,
+  config: Pick<KernConfig, "sessionMode" | "toolScope" | "userToolScope" | "groupToolScope" | "operatorUsers" | "userAliases">,
   session: SessionScope,
   iface?: string,
 ): ToolScope {
   if (config.sessionMode !== "per-user") return config.toolScope;
-  const restricted = (setting: ToolScope | "") => setting || (config.toolScope === "full" ? "write" : config.toolScope);
+  const restricted = (setting: ToolScope | "") => setting || config.toolScope;
   if (session.kind === "user") {
-    return (config.operatorUsers ?? []).includes(session.key) ? config.toolScope : restricted(config.userToolScope);
+    return isOperatorUser(config, session.key) ? config.toolScope : restricted(config.userToolScope);
   }
   if (iface && OPERATOR_INTERFACES.includes(iface)) return config.toolScope;
   // Group channels, automatic turns, and anything without a known origin.
@@ -314,9 +318,15 @@ export function turnToolScope(
  * per-user mode only core turns from an operator interface. A turn with no
  * known origin is untrusted.
  */
-export function isOperatorTurn(config: Pick<KernConfig, "sessionMode" | "operatorUsers">, session: SessionScope, iface?: string): boolean {
+/** Whether a user key belongs to an operator. Entries may name raw keys or aliases. */
+export function isOperatorUser(config: Pick<KernConfig, "operatorUsers" | "userAliases">, key: string): boolean {
+  const aliases = config.userAliases ?? {};
+  return (config.operatorUsers ?? []).some((entry) => entry === key || aliases[entry] === key);
+}
+
+export function isOperatorTurn(config: Pick<KernConfig, "sessionMode" | "operatorUsers" | "userAliases">, session: SessionScope, iface?: string): boolean {
   if (config.sessionMode !== "per-user") return true;
-  if (session.kind === "user") return (config.operatorUsers ?? []).includes(session.key);
+  if (session.kind === "user") return isOperatorUser(config, session.key);
   return !!iface && OPERATOR_INTERFACES.includes(iface);
 }
 
@@ -386,6 +396,10 @@ export function validateModelConfig(config: KernConfig): void {
   }
 }
 
+/** Settings that decide who can reach what in per-user mode. */
+const TRUST_FIELDS = ["sessionMode", "userToolScope", "groupToolScope", "userAliases", "operatorUsers",
+  "untrustedTools", "untrustedDeniedTools", "untrustedShell", "untrustedShellEnv", "untrustedShellHide"];
+
 /** Parse stored configuration without loading environment overrides or writing files. */
 export function parseConfig(userConfig: unknown): KernConfig {
   if (!isPlainObject(userConfig)) throw new Error("config.json must contain an object");
@@ -393,6 +407,10 @@ export function parseConfig(userConfig: unknown): KernConfig {
   const cleaned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(userConfig)) {
     if (!(key in FIELD_TYPES)) continue;
+    // A mistyped trust setting must not silently fall back to a default.
+    if (TRUST_FIELDS.includes(key) && !typeMatches(value, FIELD_TYPES[key])) {
+      throw new Error(`${key}: expected ${FIELD_TYPES[key]}`);
+    }
     if (typeMatches(value, FIELD_TYPES[key])) cleaned[key] = value;
     else if (["model", "provider", "baseURL", "apiKeyEnv", "auth", "api", "embeddingModel", "summaryModel", "subAgentModel", "mediaModel", "audioModel"].includes(key)) {
       throw new Error(`${key}: invalid model configuration`);
