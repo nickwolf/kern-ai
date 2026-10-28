@@ -24,6 +24,7 @@ export async function loadSystemPrompt(
   pluginToolDescriptions: Record<string, string> = {},
   scope: SessionScope = CORE_SCOPE,
   toolScope: ToolScope = config.toolScope,
+  operator = false,
 ): Promise<string> {
   const parts: string[] = [];
 
@@ -62,7 +63,7 @@ export async function loadSystemPrompt(
 
   // Per-user session mode: which memory this session owns, and the user's
   // personal knowledge index.
-  const instructions = sessionInstructions(config, scope);
+  const instructions = sessionInstructions(config, scope, operator);
   if (instructions) {
     parts.push(`<session>\n${instructions}\n</session>`);
   }

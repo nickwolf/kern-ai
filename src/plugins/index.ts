@@ -89,6 +89,15 @@ export const plugins = {
     return tools;
   },
 
+  /** Which plugin registered each tool. */
+  collectToolOwners(): Record<string, string> {
+    const owners: Record<string, string> = {};
+    for (const plugin of activePlugins) {
+      for (const name of Object.keys(plugin.tools ?? {})) owners[name] = plugin.name;
+    }
+    return owners;
+  },
+
   /** Merge all plugin tool descriptions. */
   collectToolDescriptions(): Record<string, string> {
     const descriptions: Record<string, string> = {};

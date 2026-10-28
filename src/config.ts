@@ -98,6 +98,11 @@ export interface KernConfig extends ModelConnection {
    * userToolScope. Operator turns (web, TUI, CLI) always get toolScope.
    */
   groupToolScope: ToolScope | "";
+  /**
+   * Plugin tools (e.g. "slack", MCP "<server>__<tool>") that untrusted turns
+   * may use besides the built-in safe set. See UNTRUSTED_PLUGINS.
+   */
+  untrustedTools: string[];
   /** Wake the core session as soon as a user session proposes a global memory change. */
   globalReviewOnPropose: boolean;
 
@@ -158,6 +163,7 @@ export const configDefaults: KernConfig = {
   userAliases: {},
   userToolScope: "",
   groupToolScope: "",
+  untrustedTools: [],
   globalReviewOnPropose: false,
 };
 
@@ -198,6 +204,7 @@ const FIELD_TYPES: Record<string, string> = {
   userAliases: "object",
   userToolScope: "string",
   groupToolScope: "string",
+  untrustedTools: "string[]",
   globalReviewOnPropose: "boolean",
   mcpServers: "object",
 };
@@ -244,6 +251,14 @@ export const SHELL_PLUGIN_TOOLS = ["bash", "jobs"];
 export const OPERATOR_INTERFACES = ["web", "tui", "cli"];
 
 /**
+ * Plugins whose tools untrusted turns keep in per-user mode. The rest
+ * (Slack, Matrix, Discord, Telegram, IRC, OpenRouter, MCP) act with the
+ * agent's own credentials across every conversation, e.g. reading any DM the
+ * bot has, so they are operator-only unless listed in `untrustedTools`.
+ */
+export const UNTRUSTED_PLUGINS = ["recall", "skills", "subagents", "global-memory", "dashboard"];
+
+/**
  * Tool scope for a turn. Shared mode: toolScope, as always. Per-user mode:
  * the operator's turns on the core session keep toolScope; everyone else
  * (user sessions, group channels, automatic turns) gets the narrower
@@ -258,14 +273,19 @@ export function turnToolScope(
   if (config.sessionMode !== "per-user") return config.toolScope;
   const restricted = (setting: ToolScope | "") => setting || (config.toolScope === "full" ? "write" : config.toolScope);
   if (session.kind === "user") return restricted(config.userToolScope);
-  if (!iface || OPERATOR_INTERFACES.includes(iface)) return config.toolScope;
+  if (iface && OPERATOR_INTERFACES.includes(iface)) return config.toolScope;
+  // Group channels, automatic turns, and anything without a known origin.
   return restricted(config.groupToolScope);
 }
 
-/** Whether a turn runs with operator trust (see turnToolScope). */
+/**
+ * Whether a turn runs with operator trust: always in shared mode; in
+ * per-user mode only core turns from an operator interface. A turn with no
+ * known origin is untrusted.
+ */
 export function isOperatorTurn(config: Pick<KernConfig, "sessionMode">, session: SessionScope, iface?: string): boolean {
   if (config.sessionMode !== "per-user") return true;
-  return session.kind === "core" && (!iface || OPERATOR_INTERFACES.includes(iface));
+  return session.kind === "core" && !!iface && OPERATOR_INTERFACES.includes(iface);
 }
 
 /** Model configuration errors are fatal: never silently select a different route. */

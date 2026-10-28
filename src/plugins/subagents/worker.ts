@@ -6,7 +6,7 @@ import { log } from "../../log.js";
 import { createModel } from "../../model.js";
 import { allTools, type ToolName } from "../../tools/index.js";
 import { guardMemoryTools } from "../../user-memory.js";
-import { CORE_SCOPE, type SessionScope } from "../../turn-context.js";
+import type { SessionScope } from "../../turn-context.js";
 import type { KernConfig } from "../../config.js";
 
 /**
@@ -60,7 +60,10 @@ export interface RunOptions {
   signal: AbortSignal;
   onToolCall?: () => void;
   onUsage?: (inputTokens: number, outputTokens: number) => void;
-  /** Session that spawned the child. Per-user mode guards its tools to match. */
+  /**
+   * Scope of an untrusted spawning turn (per-user mode). The child's tools get
+   * the same file guard. Unset for the operator's turns and in shared mode.
+   */
   scope?: SessionScope;
 }
 
@@ -81,9 +84,9 @@ export async function runSubAgent(opts: RunOptions): Promise<string> {
       tools[name] = allTools[name as ToolName];
     }
   }
-  // A child reads only what its parent session may read.
-  if (config.sessionMode === "per-user") {
-    tools = guardMemoryTools(tools, agentDir, scope ?? CORE_SCOPE);
+  // A child reads only what its parent turn may read.
+  if (scope) {
+    tools = guardMemoryTools(tools, agentDir, scope);
   }
 
   const messages: ModelMessage[] = [{ role: "user", content: prompt }];

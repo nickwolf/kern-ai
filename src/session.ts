@@ -28,6 +28,23 @@ export async function readSessionOwner(path: string): Promise<string> {
   }
 }
 
+/** Whether a session file was written before sessions had owners. */
+export async function isLegacySession(agentDir: string, id: string | null): Promise<boolean> {
+  if (!id) return false;
+  const path = join(agentDir, ".kern", "sessions", `${id}.jsonl`);
+  if (!existsSync(path)) return false;
+  const fh = await open(path, "r");
+  try {
+    const buf = Buffer.alloc(4096);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return JSON.parse(buf.subarray(0, bytesRead).toString("utf-8").split("\n")[0]).owner === undefined;
+  } catch {
+    return false;
+  } finally {
+    await fh.close();
+  }
+}
+
 export class SessionManager {
   private dir: string;
   private session: Session | null = null;
@@ -187,7 +204,8 @@ export class SessionManager {
     const { readdir, stat } = await import("fs/promises");
     try {
       const files = await readdir(this.dir);
-      const jsonl = files.filter((f) => f.endsWith(".jsonl"));
+      // Media sidecars (<id>.media.jsonl) share the directory but aren't sessions.
+      const jsonl = files.filter((f) => f.endsWith(".jsonl") && !f.endsWith(".media.jsonl"));
       if (jsonl.length === 0) return null;
 
       // Find most recently modified session belonging to this owner. In

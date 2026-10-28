@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PluginContext } from "../types.js";
 import { formatDuration, type SubAgentRegistry, type SubAgentRecord } from "./registry.js";
 import { CORE_KEY } from "../../session-router.js";
+import { isOperatorTurn } from "../../config.js";
 
 let _registry: SubAgentRegistry | null = null;
 let _ctx: PluginContext | null = null;
@@ -55,7 +56,8 @@ export const spawnTool = tool({
 
     const origin = _ctx?.origin() ?? null;
     try {
-      const handle = _registry.spawn(prompt, { origin, maxSteps, model, scope: _ctx?.scope() });
+      const scope = _ctx && !isOperatorTurn(_ctx.config, _ctx.scope(), origin?.interface) ? _ctx.scope() : undefined;
+      const handle = _registry.spawn(prompt, { origin, maxSteps, model, scope });
       const deliverable = origin && !UNDELIVERABLE.includes(origin.interface);
       return [
         `Sub-agent spawned: ${handle.id}`,
@@ -79,12 +81,15 @@ export const spawnTool = tool({
 });
 
 /**
- * Whether the current session may see a sub-agent: one it spawned. Records
- * from before per-user mode (no sessionKey) belong to the core session.
+ * Whether the current turn may see a sub-agent: the operator sees all, other
+ * turns only children of their own session. Records from before per-user
+ * mode (no sessionKey) belong to the core session.
  */
 function isOwnRecord(record: SubAgentRecord): boolean {
-  if (_ctx?.config.sessionMode !== "per-user") return true;
-  const current = _ctx.origin()?.sessionKey ?? CORE_KEY;
+  if (!_ctx) return true;
+  const origin = _ctx.origin();
+  if (isOperatorTurn(_ctx.config, _ctx.scope(), origin?.interface)) return true;
+  const current = origin?.sessionKey ?? CORE_KEY;
   return (record.origin?.sessionKey ?? CORE_KEY) === current;
 }
 

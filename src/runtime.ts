@@ -5,7 +5,7 @@ import { createModel } from "./model.js";
 import { allTools, type ToolName } from "./tools/index.js";
 import { SessionManager } from "./session.js";
 import { estimateTextTokens } from "./context.js";
-import { loadConfig, getToolsForScope, turnToolScope, isOperatorTurn, SHELL_PLUGIN_TOOLS, type KernConfig, type ToolScope } from "./config.js";
+import { loadConfig, getToolsForScope, turnToolScope, isOperatorTurn, SHELL_PLUGIN_TOOLS, UNTRUSTED_PLUGINS, type KernConfig, type ToolScope } from "./config.js";
 import { initKernTool, incrementMessageCount, addTokenUsage } from "./tools/kern.js";
 import type { SegmentIndex } from "./segments.js";
 import type { MemoryDB } from "./memory.js";
@@ -60,6 +60,8 @@ export class Runtime {
   /** Tool descriptions from plugins for system prompt */
   private pluginToolDescriptions: Record<string, string> = {};
 
+  private pluginToolOwners: Record<string, string> = {};
+
   /** Current active turn snapshot for activity narration and inspection */
   private currentTurnSnapshot: TurnSnapshot | null = null;
 
@@ -79,6 +81,11 @@ export class Runtime {
 
   setPluginToolDescriptions(descriptions: Record<string, string>) {
     this.pluginToolDescriptions = descriptions;
+  }
+
+  /** Which plugin registered each plugin tool (for per-user mode tool policy). */
+  setPluginToolOwners(owners: Record<string, string>) {
+    this.pluginToolOwners = owners;
   }
 
   setContextInjectionFn(fn: (info: BeforeContextInfo) => Promise<ContextInjection[]>) {
@@ -112,7 +119,7 @@ export class Runtime {
 
   async init(): Promise<void> {
     this.config = await loadConfig(this.agentDir);
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
+    this.systemPrompt = await this.loadPrompt();
     this.session = new SessionManager(this.agentDir, scopeOwner(this.scope));
     await this.session.init();
     await this.session.load(this.initialSessionId);
@@ -217,7 +224,7 @@ export class Runtime {
     onEvent({ type: "thinking" });
 
     // Reload system prompt (picks up new daily notes, summaries, knowledge changes)
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
+    this.systemPrompt = await this.loadPrompt();
 
     // Add user message to session
     const preview = userMessage.slice(0, 80).replace(/\n/g, " ");
@@ -242,17 +249,14 @@ export class Runtime {
         tools[name] = allTools[name as ToolName];
       }
     }
-    // Plugin tools are always included, except shell tools outside "full"
-    Object.assign(tools, this.pluginTools);
-    if (toolScope !== "full") {
-      for (const name of SHELL_PLUGIN_TOOLS) delete tools[name];
+    for (const name of Object.keys(this.pluginTools)) {
+      if (this.pluginToolAllowed(name, toolScope)) tools[name] = this.pluginTools[name];
     }
-    // Per-user mode: each session reaches only personal memory it owns (user
-    // sessions write nothing else), and only the operator gets operator-only
-    // kern actions.
-    if (this.config.sessionMode === "per-user") {
-      tools = guardMemoryTools(tools, this.agentDir, this.scope);
-      if (!isOperatorTurn(this.config, this.scope, currentTurn()?.origin.interface)) tools = restrictKernTool(tools);
+    // Per-user mode, untrusted turns: files limited to what this session may
+    // reach, and no operator-only kern actions. The operator's turns are not
+    // restricted.
+    if (this.config.sessionMode === "per-user" && !this.isOperatorTurn()) {
+      tools = restrictKernTool(guardMemoryTools(tools, this.agentDir, this.scope));
     }
     const turnTools = tools;
 
@@ -564,8 +568,32 @@ export class Runtime {
     return turnToolScope(this.config, this.scope, currentTurn()?.origin.interface);
   }
 
+  private isOperatorTurn(): boolean {
+    return isOperatorTurn(this.config, this.scope, currentTurn()?.origin.interface);
+  }
+
+  /**
+   * Whether a plugin tool is offered this turn. Shell tools need the "full"
+   * scope. In per-user mode, untrusted turns get only tools from
+   * UNTRUSTED_PLUGINS plus the operator's `untrustedTools`.
+   */
+  private pluginToolAllowed(name: string, toolScope: ToolScope): boolean {
+    if (toolScope !== "full" && SHELL_PLUGIN_TOOLS.includes(name)) return false;
+    if (this.config.sessionMode !== "per-user" || this.isOperatorTurn()) return true;
+    return UNTRUSTED_PLUGINS.includes(this.pluginToolOwners[name] ?? "") || this.config.untrustedTools.includes(name);
+  }
+
+  /** System prompt for the current turn: its scope, tools and trust. */
+  private loadPrompt(): Promise<string> {
+    const toolScope = this.turnToolScope();
+    const descriptions = Object.fromEntries(
+      Object.entries(this.pluginToolDescriptions).filter(([name]) => this.pluginToolAllowed(name, toolScope)),
+    );
+    return loadSystemPrompt(this.agentDir, this.config, descriptions, this.scope, toolScope, this.isOperatorTurn());
+  }
+
   async getSystemPrompt(): Promise<string> {
-    this.systemPrompt = await loadSystemPrompt(this.agentDir, this.config, this.pluginToolDescriptions, this.scope, this.turnToolScope());
+    this.systemPrompt = await this.loadPrompt();
     const { system } = await this.buildPromptContext();
     return typeof system === "string" ? system : system.content;
   }

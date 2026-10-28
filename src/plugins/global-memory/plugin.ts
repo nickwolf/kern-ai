@@ -3,9 +3,8 @@ import { z } from "zod";
 import type { KernPlugin, PluginContext, ContextInjection } from "../types.js";
 import { isPerUserMode, CORE_KEY } from "../../session-router.js";
 import { writeProposal, listPending, resolveProposal, type PendingProposal } from "./inbox.js";
-import { commitMemory } from "./git.js";
+import { commitMemory, keepUsersOutOfGit } from "./git.js";
 import { isOperatorTurn } from "../../config.js";
-import { userMemoryRelPath } from "../../user-memory.js";
 import { log } from "../../log.js";
 
 /**
@@ -64,7 +63,10 @@ export const proposeGlobalTool = tool({
         log.error("global-memory", `review turn failed: ${err.message}`);
       });
     }
-    return `Proposed (${file}). The core session will review it.`;
+    const when = _ctx.config.globalReviewOnPropose
+      ? "shortly"
+      : _ctx.config.heartbeatInterval > 0 ? `within about ${_ctx.config.heartbeatInterval} minutes` : "when the operator next reviews the inbox";
+    return `Queued for review (${file}). Not shared yet: the core session will review it ${when}. Tell the user it is pending.`;
   },
 });
 
@@ -75,11 +77,11 @@ function reviewsInbox(ctx: PluginContext): boolean {
   return iface === "system" || isOperatorTurn(ctx.config, ctx.scope(), iface);
 }
 
-/** Paths a session commits: everything but personal memory for the core, its own folder for a user. */
-function ownedPathspecs(ctx: PluginContext): string[] {
-  const scope = ctx.scope();
-  return scope.kind === "core" ? [".", ":(exclude)users"] : [userMemoryRelPath(scope.key)];
-}
+/**
+ * What the core commits: global memory, never runtime state. Personal memory
+ * (users/) is gitignored, and commitMemory never commits it either way.
+ */
+const CORE_PATHSPECS = [".", ":(exclude).kern"];
 
 export const resolveProposalTool = tool({
   description: [
@@ -98,7 +100,7 @@ export const resolveProposalTool = tool({
     const from = await resolveProposal(_ctx.agentDir, file, decision, note);
     if (!from) return `No pending proposal named ${file} in .kern/global-inbox/.`;
     log("global-memory", `proposal ${file} from ${from} ${decision}`);
-    const committed = await commitMemory(_ctx.agentDir, ownedPathspecs(_ctx), `global memory: ${decision} proposal from ${from}: ${note.trim().slice(0, 72)}`)
+    const committed = await commitMemory(_ctx.agentDir, CORE_PATHSPECS, `global memory: ${decision} proposal from ${from}: ${note.trim().slice(0, 72)}`)
       .catch((err) => `Commit failed: ${err.message}`);
     return `Proposal ${decision} and archived. ${committed}`;
   },
@@ -106,15 +108,18 @@ export const resolveProposalTool = tool({
 
 export const commitMemoryTool = tool({
   description: [
-    "Commit (and push, if the agent repo has an origin) the memory this session owns:",
-    "global memory from the core session, your own users/<user>/ folder from a user session.",
+    "Commit (and push, if the agent repo has an origin) global memory (core session).",
+    "Personal memory under users/ is never committed: it is saved on disk as soon as it is written.",
   ].join(" "),
   inputSchema: z.object({
     message: z.string().describe("Commit message"),
   }),
   execute: async ({ message }) => {
     if (!_ctx) return "Global memory is not available.";
-    return commitMemory(_ctx.agentDir, ownedPathspecs(_ctx), message).catch((err) => `Commit failed: ${err.message}`);
+    if (_ctx.scope().kind === "user") {
+      return "Nothing to do: personal memory is saved on disk as soon as you write it, and is kept out of git so it stays private.";
+    }
+    return commitMemory(_ctx.agentDir, CORE_PATHSPECS, message).catch((err) => `Commit failed: ${err.message}`);
   },
 });
 
@@ -137,6 +142,7 @@ export const globalMemoryPlugin: KernPlugin = {
 
   async onStartup(ctx) {
     _ctx = ctx;
+    await keepUsersOutOfGit(ctx.agentDir).catch((err) => log.error("global-memory", `could not update .gitignore: ${err.message}`));
   },
 
   async onShutdown() {

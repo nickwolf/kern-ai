@@ -7,7 +7,10 @@ import { MatrixInterface, isMatrixUserId } from "./interfaces/matrix.js";
 import { NostrInterface, parseRelayList } from "./interfaces/nostr.js";
 import { IrcInterface, parseIrcUrls } from "./interfaces/irc.js";
 import { CliInterface } from "./interfaces/cli.js";
-import { loadConfig, saveConfigField, type KernConfig } from "./config.js";
+import { loadConfig, saveConfigField, OPERATOR_INTERFACES, type KernConfig } from "./config.js";
+
+/** Commands anyone may run in per-user mode; the rest are the operator's. */
+const USER_COMMANDS = ["/help", "/status", "/wyd"];
 import { migrateAgentFiles } from "./migrations/index.js";
 import { PACKAGE_VERSION } from "./package-version.js";
 import { readFile, appendFile } from "fs/promises";
@@ -24,7 +27,8 @@ import { SegmentIndex } from "./segments.js";
 import { logModelRoutes } from "./model.js";
 import { MemoryDB } from "./memory.js";
 import type { QueuedMessage } from "./queue.js";
-import { SessionRouter, CORE_KEY, type Route } from "./session-router.js";
+import { SessionRouter, CORE_KEY, isPerUserMode, type Route } from "./session-router.js";
+import { isLegacySession } from "./session.js";
 import { getStatusData as getStatusDataFn, setQueueStatusFn, setInterfaceStatusFn, setSegmentStatsFn, setPluginStatusFn, type InterfaceStatus } from "./tools/kern.js";
 import { plugins, type PluginContext } from "./plugins/index.js";
 import { formatLocalISO, resolveHostTimezone } from "./util.js";
@@ -245,6 +249,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
       rt.addTools(pluginTools);
     }
     rt.setPluginToolDescriptions(pluginToolDescriptions);
+    rt.setPluginToolOwners(plugins.collectToolOwners());
     rt.setContextInjectionFn((info) => plugins.collectContextInjections(info, pluginCtx));
     rt.onToolResult = (toolName, result, emit) => {
       plugins.dispatchToolResult(toolName, result, emit, pluginCtx);
@@ -290,12 +295,29 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     route.queue.setHandler(async (msg, getPendingMessages, signal) => {
       const origin: TurnOrigin = { interface: msg.interface, channel: msg.channel, chatId: msg.chatId, userId: msg.userId, sessionKey: route.key };
       const ctx = { origin, sessionId: route.runtime.getSessionId(), scope: route.scope };
-      return router.runTurn(() => turnContext.run(ctx, () => handleTurn(route, msg, getPendingMessages, signal)));
+      // Waiting for a free slot (maxConcurrentSessions) isn't idleness: keep
+      // the queue's idle timer from firing until the turn actually starts.
+      const keepAlive = setInterval(() => route.queue.touch(), 30_000);
+      try {
+        return await router.runTurn(() => {
+          clearInterval(keepAlive);
+          // The queue may have given up on this turn while it waited; running it
+          // now would overlap whatever the queue started next.
+          if (signal.aborted) throw new Error("turn cancelled while waiting for a free slot");
+          return turnContext.run(ctx, () => handleTurn(route, msg, getPendingMessages, signal));
+        });
+      } finally {
+        clearInterval(keepAlive);
+      }
     });
   };
 
   const router = new SessionRouter({ config, core: runtime, createRuntime, attachQueue });
   router.startEviction();
+  if (isPerUserMode(config) && await isLegacySession(agentDir, runtime.getSessionId())) {
+    log.warn("kern", "per-user mode: the core session predates per-user mode and still holds everyone's earlier DMs, " +
+      "which group-channel turns can see and recall. See docs/sessions.md, \"Turning it on for an existing agent\".");
+  }
   setQueueStatusFn(() => router.getStatus());
 
   const handleTurn = async (route: Route, msg: QueuedMessage, getPendingMessages: () => QueuedMessage[], signal: AbortSignal): Promise<string> => {
@@ -364,6 +386,12 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
     const trimmed = text.trim();
     if (trimmed.startsWith("/") || trimmed.startsWith("!")) {
       const canonicalCmd = trimmed.startsWith("!") ? "/" + trimmed.slice(1) : trimmed;
+      // Per-user mode: commands that act on the whole agent or show other
+      // sessions' activity are the operator's.
+      if (isPerUserMode(config) && !OPERATOR_INTERFACES.includes(iface) && !USER_COMMANDS.includes(canonicalCmd)
+          && (["/restart", "/plugins"].includes(canonicalCmd) || plugins.getCommand(canonicalCmd))) {
+        return `${canonicalCmd} is only available to the operator (web UI, TUI or CLI).`;
+      }
       const result = await handleSlashCommand(canonicalCmd, userId, iface, agentName, agentDir, route.runtime);
       if (result !== null) {
         server.broadcast({

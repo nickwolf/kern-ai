@@ -28,7 +28,8 @@ export function setContextBounds(sessionId: string, trimmedCount: number) {
  * vector index can't filter by session, so fetch extra and filter.
  */
 export async function scopedSearch(index: RecallIndex, query: string, limit: number): Promise<RecallResult[]> {
-  const canRead = await recallAccess(index, currentTurn()?.scope ?? CORE_SCOPE, _config);
+  const turn = currentTurn();
+  const canRead = await recallAccess(index, turn?.scope ?? CORE_SCOPE, _config, turn?.origin.interface);
   if (!canRead) return index.search(query, limit);
   const results = await index.search(query, limit * 10);
   return results.filter(canRead).slice(0, limit);
@@ -77,7 +78,8 @@ export const recallTool = tool({
     try {
       // Load mode
       if (args.sessionId && args.messageStart !== undefined && args.messageEnd !== undefined) {
-        const canRead = await recallAccess(_recallIndex, currentTurn()?.scope ?? CORE_SCOPE, _config);
+        const turn = currentTurn();
+        const canRead = await recallAccess(_recallIndex, turn?.scope ?? CORE_SCOPE, _config, turn?.origin.interface);
         if (canRead && !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: args.messageEnd })) {
           return "Those messages are not readable from this session (another user's conversation, or a channel this user is not in).";
         }

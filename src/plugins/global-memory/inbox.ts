@@ -17,6 +17,14 @@ export interface PendingProposal {
   target: string;
 }
 
+/**
+ * Header values are shown in the core's system prompt, so they stay one short
+ * line: a user can't smuggle extra lines or instructions in through them.
+ */
+function oneLine(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 120);
+}
+
 /** Write a proposal into .kern/global-inbox/. Returns the file name. */
 export async function writeProposal(agentDir: string, p: Proposal, now = new Date()): Promise<string> {
   const dir = globalInboxDir(agentDir);
@@ -25,9 +33,9 @@ export async function writeProposal(agentDir: string, p: Proposal, now = new Dat
   const file = `${stamp}-${userDirName(p.from)}.md`;
   const body = [
     "---",
-    `from: ${p.from}`,
-    `session: ${p.sessionId ?? "unknown"}`,
-    `target: ${p.target}`,
+    `from: ${oneLine(p.from)}`,
+    `session: ${oneLine(p.sessionId ?? "unknown")}`,
+    `target: ${oneLine(p.target)}`,
     `proposed: ${now.toISOString()}`,
     "---",
     "",
@@ -52,7 +60,7 @@ export async function listPending(agentDir: string): Promise<PendingProposal[]> 
   const pending: PendingProposal[] = [];
   for (const file of files) {
     const text = await readFile(join(dir, file), "utf-8").catch(() => "");
-    const field = (name: string) => text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1]?.trim() ?? "?";
+    const field = (name: string) => oneLine(text.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1] ?? "?");
     pending.push({ file, from: field("from"), target: field("target") });
   }
   return pending;

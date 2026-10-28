@@ -8,7 +8,7 @@ import { createEmbeddingModel, isEmbeddingInputTooLong } from "../../model.js";
 import type { ModelMessage } from "ai";
 import type { MemoryDB } from "../../memory.js";
 import type { KernConfig } from "../../config.js";
-import { parseEnvelopes, type Envelope, type EnvelopeSource } from "./access.js";
+import { leadingEnvelope, type Envelope, type EnvelopeSource } from "./access.js";
 
 const MAX_CHUNK_TOKENS = 1000; // rough token limit per chunk
 const EMBED_BATCH_SIZE = 100;
@@ -305,11 +305,14 @@ export class RecallIndex implements EnvelopeSource {
     }));
   }
 
-  envelopesInRange(sessionId: string, start: number, end: number): Envelope[] {
-    const rows = this.db.prepare(
-      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index >= ? AND msg_index < ?"
+  rangeEnvelopes(sessionId: string, start: number, end: number): (Envelope | null)[] {
+    const anchor = this.db.prepare(
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index <= ? ORDER BY msg_index DESC LIMIT 1"
+    ).get(sessionId, start) as { content: string } | undefined;
+    const inside = this.db.prepare(
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND msg_index > ? AND msg_index < ?"
     ).all(sessionId, start, end) as Array<{ content: string }>;
-    return rows.flatMap((r) => parseEnvelopes(r.content));
+    return [...(anchor ? [anchor] : []), ...inside].map((r) => leadingEnvelope(r.content));
   }
 
   envelopesFromUser(sessionIds: string[], userId: string): Envelope[] {
@@ -317,7 +320,7 @@ export class RecallIndex implements EnvelopeSource {
     const rows = this.db.prepare(
       `SELECT content FROM messages WHERE role = 'user' AND session_id IN (${sessionIds.map(() => "?").join(",")}) AND instr(content, ?) > 0`
     ).all(...sessionIds, `user: ${userId}, time:`) as Array<{ content: string }>;
-    return rows.flatMap((r) => parseEnvelopes(r.content));
+    return rows.map((r) => leadingEnvelope(r.content)).filter((e): e is Envelope => e !== null && e.userId === userId);
   }
 
   /**
