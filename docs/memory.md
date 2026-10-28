@@ -45,3 +45,5 @@ This keeps memory current during long sessions.
 These are the agent's portable memory. Clone the repo and the agent picks up where it left off.
 
 See [Context](context.md) for how memory is injected into the prompt.
+
+In per-user session mode, memory is split into global memory (the files above, written only by the core session) and personal memory under `users/<user>/`. See [Sessions](sessions.md#memory).

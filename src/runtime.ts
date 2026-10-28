@@ -14,6 +14,7 @@ import type { ContextInjection, BeforeContextInfo } from "./plugins/types.js";
 import type { Attachment } from "./interfaces/types.js";
 import { extractText, stripAnsi } from "./util.js";
 import { CORE_SCOPE, scopeOwner, type SessionScope } from "./turn-context.js";
+import { guardUserTools } from "./user-memory.js";
 export type { SessionStats } from "./context.js";
 
 
@@ -245,6 +246,8 @@ export class Runtime {
     }
     // Plugin tools are always included (not gated by scope)
     Object.assign(tools, this.pluginTools);
+    // User sessions write only their own memory; global memory is the core's.
+    const turnTools = this.scope.kind === "user" ? guardUserTools(tools, this.agentDir, this.scope.key) : tools;
 
     const model = createModel(this.config);
     let streamError: unknown = null;
@@ -300,7 +303,7 @@ export class Runtime {
         model,
         system: systemWithInjections,
         messages: resolvedMessages,
-        tools,
+        tools: turnTools,
         abortSignal,
         ...ollamaOptions,
         stopWhen: stepCountIs(this.config.maxSteps),

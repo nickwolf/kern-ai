@@ -1,6 +1,9 @@
 import type { KernPlugin, PluginContext, RouteHandler, BeforeContextInfo, ContextInjection } from "../types.js";
-import { loadNotesContext, regenerateNotesSummary } from "./notes.js";
+import { loadNotesContext, regenerateNotesSummary, listNotes } from "./notes.js";
 import { log } from "../../log.js";
+import { readFile } from "fs/promises";
+import { join } from "path";
+import { userMemoryDir, userMemoryRelPath } from "../../user-memory.js";
 
 function wrapDocument(path: string, content: string): string {
   return `<document path="${path}">\n${content.trim()}\n</document>`;
@@ -95,6 +98,24 @@ export const notesPlugin: KernPlugin = {
         content: wrapDocument(`notes/${cachedNotes.latestFile}`, cachedNotes.latest),
         placement: "system",
       });
+    }
+
+    // User session in per-user mode: also the user's latest personal note.
+    const scope = ctx.scope();
+    if (scope.kind === "user") {
+      try {
+        const notesDir = join(userMemoryDir(ctx.agentDir, scope.key), "notes");
+        const latestFile = (await listNotes(notesDir)).at(-1);
+        if (latestFile) {
+          injections.push({
+            label: "",
+            content: wrapDocument(`${userMemoryRelPath(scope.key)}/notes/${latestFile}`, await readFile(join(notesDir, latestFile), "utf-8")),
+            placement: "system",
+          });
+        }
+      } catch (err: any) {
+        log.error("notes", `failed to load personal notes: ${err.message}`);
+      }
     }
 
     return injections.length > 0 ? injections : null;

@@ -1,6 +1,6 @@
 import type { KernPlugin, PluginContext, RouteHandler, BeforeContextInfo, ContextInjection } from "../types.js";
 import { RecallIndex } from "./recall.js";
-import { recallTool, setRecallIndex, setContextBounds } from "./tool.js";
+import { recallTool, setRecallIndex, setContextBounds, scopedSearch } from "./tool.js";
 import { analyzeRecallHealth, formatRecallHealthReport, listRecallSessions } from "./health.js";
 import { analyzeSegmentHealth, formatHealthReport, listSessions } from "./segment-health.js";
 import { log } from "../../log.js";
@@ -107,7 +107,7 @@ export const recallPlugin: KernPlugin = {
     if (!recallIndex || info.trimmedCount <= 0 || ctx.config.autoRecall === false) return null;
 
     try {
-      const results = await recallIndex.search(info.userQuery, 3);
+      const results = await scopedSearch(recallIndex, info.userQuery, 3);
       const relevant = results.filter(r => r.distance < 0.95 && r.msg_end < info.trimmedCount);
       if (relevant.length === 0) return null;
 

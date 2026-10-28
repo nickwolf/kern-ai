@@ -99,6 +99,9 @@ export interface BeforeContextInfo {
 export interface KernPlugin {
   name: string;
 
+  /** Skip loading this plugin when it returns false (e.g. a config-gated feature). */
+  enabled?: (ctx: PluginContext) => boolean;
+
   /** Tools to register (merged into allTools) */
   tools?: Record<string, any>;
 

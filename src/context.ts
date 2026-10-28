@@ -6,6 +6,7 @@ import { log } from "./log.js";
 import { getToolsForScope, type KernConfig } from "./config.js";
 import type { SegmentIndex } from "./segments.js";
 import { CORE_SCOPE, type SessionScope } from "./turn-context.js";
+import { sessionInstructions, userMemoryDir, userMemoryRelPath } from "./user-memory.js";
 
 function wrapDocument(pathLabel: string, content: string): string {
   const safePath = pathLabel.replace(/"/g, '&quot;');
@@ -51,6 +52,19 @@ export async function loadSystemPrompt(agentDir: string, config: KernConfig, plu
   const usersPath = join(agentDir, "USERS.md");
   if (existsSync(usersPath)) {
     parts.push(wrapDocument("USERS.md", await readFile(usersPath, "utf-8")));
+  }
+
+  // Per-user session mode: which memory this session owns, and the user's
+  // personal knowledge index.
+  const instructions = sessionInstructions(config, scope);
+  if (instructions) {
+    parts.push(`<session>\n${instructions}\n</session>`);
+  }
+  if (instructions && scope.kind === "user") {
+    const personalIndex = join(userMemoryDir(agentDir, scope.key), "KNOWLEDGE.md");
+    if (existsSync(personalIndex)) {
+      parts.push(wrapDocument(`${userMemoryRelPath(scope.key)}/KNOWLEDGE.md`, await readFile(personalIndex, "utf-8")));
+    }
   }
 
   // Inject live runtime info

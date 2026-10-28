@@ -13,6 +13,7 @@ import { discordPlugin } from "./discord/plugin.js";
 import { matrixPlugin } from "./matrix/plugin.js";
 import { telegramPlugin } from "./telegram/plugin.js";
 import { openrouterPlugin } from "./openrouter/plugin.js";
+import { globalMemoryPlugin } from "./global-memory/plugin.js";
 import { log } from "../log.js";
 
 export type { KernPlugin, PluginContext, RouteHandler, ContextInjection, BeforeContextInfo } from "./types.js";
@@ -36,6 +37,7 @@ const availablePlugins: KernPlugin[] = [
   matrixPlugin,
   telegramPlugin,
   openrouterPlugin,
+  globalMemoryPlugin,
 ];
 
 /** Active plugin instances after loading */
@@ -51,6 +53,7 @@ export const plugins = {
     activePlugins = [];
     for (const plugin of availablePlugins) {
       try {
+        if (plugin.enabled && !plugin.enabled(ctx)) continue;
         if (plugin.onStartup) await plugin.onStartup(ctx);
         activePlugins.push(plugin);
         log("plugin", `loaded: ${plugin.name}`);

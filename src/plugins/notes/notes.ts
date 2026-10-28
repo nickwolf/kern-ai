@@ -16,7 +16,7 @@ let generating = false;
 const DAILY_NOTE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
 
 // Read sorted daily note files from notes/ directory
-async function listNotes(notesDir: string): Promise<string[]> {
+export async function listNotes(notesDir: string): Promise<string[]> {
   if (!existsSync(notesDir)) return [];
   const files = await readdir(notesDir);
   return files.filter(f => DAILY_NOTE_RE.test(f)).sort();

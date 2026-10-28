@@ -738,6 +738,7 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   }
 
   // Heartbeat — goes through queue as low priority
+  const userHeartbeatAt = new Map<string, number>();
   if (config.heartbeatInterval > 0) {
     const intervalMs = config.heartbeatInterval * 60 * 1000;
     setInterval(async () => {
@@ -748,7 +749,24 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
         server.broadcast({
           type: "heartbeat" as any,
           text: heartbeatText,
+          sessionKey: CORE_KEY,
         });
+
+        // Per-user mode: user sessions active since their last heartbeat get
+        // one too, so their personal notes stay current. Enqueued on the
+        // route's queue directly so it doesn't count as user activity.
+        for (const route of router.all()) {
+          if (route.key === CORE_KEY) continue;
+          if (route.lastActive <= (userHeartbeatAt.get(route.key) ?? 0)) continue;
+          userHeartbeatAt.set(route.key, Date.now());
+          route.queue.enqueue({
+            text: "[heartbeat, scope: user]",
+            userId: "system",
+            interface: "system",
+            channel: "heartbeat",
+            isHeartbeat: true,
+          }).catch((e: any) => log.error("kern", `heartbeat error (${route.key}): ${e.message}`));
+        }
 
         await router.core.queue.enqueue({
           text: heartbeatText,

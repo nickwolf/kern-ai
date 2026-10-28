@@ -72,7 +72,7 @@ These run inside the agent process itself — not separate services.
 - **Slack**: Bolt with Socket Mode. No incoming port needed.
 - **Matrix**: `/sync` long poll against a Matrix homeserver (Synapse, Dendrite, etc.). No incoming port needed.
 
-All inject messages into the same queue as TUI and web. The agent doesn't know or care which interface a message came from — it sees metadata tags like `[via telegram, user: oguz]`. See [docs/interfaces.md § Metadata contract](interfaces.md#metadata-contract) for the full metadata surfaces (text prefix, internal message object, SSE events) and per-interface field mappings.
+All inject messages into the same queue as TUI and web (in per-user session mode, each user's direct messages get their own session and queue instead; see [Sessions](sessions.md)). The agent doesn't know or care which interface a message came from — it sees metadata tags like `[via telegram, user: oguz]`. See [docs/interfaces.md § Metadata contract](interfaces.md#metadata-contract) for the full metadata surfaces (text prefix, internal message object, SSE events) and per-interface field mappings.
 
 ### The envelope is the contract
 

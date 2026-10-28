@@ -21,7 +21,7 @@ function toUTC(iso: string): string | null {
   return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
-interface RecallResult {
+export interface RecallResult {
   text: string;
   timestamp: string;
   session_id: string;
@@ -33,7 +33,7 @@ interface RecallResult {
 export class RecallIndex {
   private db: MemoryDB["db"];
   private embeddingModel: Parameters<typeof embed>[0]["model"];
-  private agentDir: string;
+  readonly agentDir: string;
   private activeSessions = new Map<string, Promise<number>>();
 
   constructor(memoryDB: MemoryDB, agentDir: string, config: KernConfig) {

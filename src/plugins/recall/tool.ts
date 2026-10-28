@@ -1,7 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { RecallIndex } from "./recall.js";
-import { currentTurn } from "../../turn-context.js";
+import type { RecallIndex, RecallResult } from "./recall.js";
+import { currentTurn, CORE_SCOPE } from "../../turn-context.js";
+import { readableSessionIds } from "../../user-memory.js";
 
 let _recallIndex: RecallIndex | null = null;
 // Context-window bounds per session, so concurrent sessions don't overwrite
@@ -17,6 +18,24 @@ export function setRecallIndex(index: RecallIndex | null) {
 export function setContextBounds(sessionId: string, trimmedCount: number) {
   _contextTrimmed.set(sessionId, trimmedCount);
   _lastContextSessionId = sessionId;
+}
+
+/**
+ * Search limited to the sessions the current turn may read. User sessions
+ * (per-user mode) see their own sessions and the core's, never another
+ * user's. The vector index can't filter by session, so fetch extra and filter.
+ */
+export async function scopedSearch(index: RecallIndex, query: string, limit: number): Promise<RecallResult[]> {
+  const readable = await readableSessionIds(index.agentDir, currentTurn()?.scope ?? CORE_SCOPE);
+  if (!readable) return index.search(query, limit);
+  const results = await index.search(query, limit * 10);
+  return results.filter((r) => readable.has(r.session_id)).slice(0, limit);
+}
+
+/** Whether the current turn may load raw messages from a session. */
+async function canReadSession(index: RecallIndex, sessionId: string): Promise<boolean> {
+  const readable = await readableSessionIds(index.agentDir, currentTurn()?.scope ?? CORE_SCOPE);
+  return !readable || readable.has(sessionId);
 }
 
 export const recallTool = tool({
@@ -62,12 +81,15 @@ export const recallTool = tool({
     try {
       // Load mode
       if (args.sessionId && args.messageStart !== undefined && args.messageEnd !== undefined) {
+        if (!(await canReadSession(_recallIndex, args.sessionId))) {
+          return "That session belongs to another user and is not readable from this session.";
+        }
         return await _recallIndex.loadMessages(args.sessionId, args.messageStart, args.messageEnd);
       }
 
       // Search mode
       if (args.query) {
-        let results = await _recallIndex.search(args.query, (args.limit || 5) * 3); // fetch extra for filtering
+        let results = await scopedSearch(_recallIndex, args.query, (args.limit || 5) * 3); // fetch extra for filtering
         
         // Apply date filters. `recall.db` stores UTC-normalized timestamps, so
         // lexicographic string comparison is correct.

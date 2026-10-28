@@ -91,6 +91,8 @@ export interface KernConfig extends ModelConnection {
   userAliases: Record<string, string>;
   /** Tool scope for user sessions. Empty means the same as toolScope. */
   userToolScope: ToolScope | "";
+  /** Wake the core session as soon as a user session proposes a global memory change. */
+  globalReviewOnPropose: boolean;
 
   // MCP — Model Context Protocol servers. Agent-local. See docs/mcp.md.
   mcpServers?: Record<string, McpServerConfig>;
@@ -148,6 +150,7 @@ export const configDefaults: KernConfig = {
   userSessionIdleMinutes: 60,
   userAliases: {},
   userToolScope: "",
+  globalReviewOnPropose: false,
 };
 
 const FIELD_TYPES: Record<string, string> = {
@@ -186,6 +189,7 @@ const FIELD_TYPES: Record<string, string> = {
   userSessionIdleMinutes: "number",
   userAliases: "object",
   userToolScope: "string",
+  globalReviewOnPropose: "boolean",
   mcpServers: "object",
 };
 
