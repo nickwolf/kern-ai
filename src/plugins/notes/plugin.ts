@@ -1,7 +1,7 @@
 import type { KernPlugin, PluginContext, RouteHandler, BeforeContextInfo, ContextInjection } from "../types.js";
 import { loadNotesContext, regenerateNotesSummary, listNotes } from "./notes.js";
 import { log } from "../../log.js";
-import { readFile } from "fs/promises";
+import { readFileNoFollow } from "../../util.js";
 import { join } from "path";
 import { userMemoryDir, userMemoryRelPath } from "../../user-memory.js";
 
@@ -109,7 +109,7 @@ export const notesPlugin: KernPlugin = {
         if (latestFile) {
           injections.push({
             label: "",
-            content: wrapDocument(`${userMemoryRelPath(scope.key)}/notes/${latestFile}`, await readFile(join(notesDir, latestFile), "utf-8")),
+            content: wrapDocument(`${userMemoryRelPath(scope.key)}/notes/${latestFile}`, await readFileNoFollow(join(notesDir, latestFile))),
             placement: "system",
           });
         }

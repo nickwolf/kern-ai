@@ -513,3 +513,73 @@ test("commitMemory: repo hooks don't run; users/ stays out even when tracked and
     assert.match(git("show", "--name-status", "--format=", "HEAD"), /^D\s+users\/u\/K.md$/m);
   });
 });
+
+test("memory reads don't follow symlinks planted by a sandboxed shell", async () => {
+  const { readFileNoFollow } = await import("../src/util.js");
+  await withAgentDir(async (dir) => {
+    await mkdir(join(dir, U1), { recursive: true });
+    await mkdir(join(dir, U2), { recursive: true });
+    await writeFile(join(dir, U2, "KNOWLEDGE.md"), "U2 SECRET\n");
+    await symlink(join(dir, U2, "KNOWLEDGE.md"), join(dir, U1, "KNOWLEDGE.md"));
+    await assert.rejects(readFileNoFollow(join(dir, U1, "KNOWLEDGE.md")));
+    const prompt = await loadSystemPrompt(dir, perUser, {}, user("slack:U1"));
+    assert.doesNotMatch(prompt, /U2 SECRET/);
+  });
+});
+
+test("recall load mode: restricted turns get only indexed, checked messages", async () => {
+  const { setRecallIndex, recallTool } = await import("../src/plugins/recall/tool.js");
+  const { turnContext } = await import("../src/turn-context.js");
+  await withAgentDir(async (dir) => {
+    const core = new SessionManager(dir);
+    await core.init();
+    await core.create("core-1");
+    const loads: unknown[] = [];
+    const env = { iface: "slack", channel: "#general", userId: "U1" };
+    const fake = {
+      agentDir: dir,
+      indexedThrough: () => 10,
+      rangeEnvelopes: () => [env],
+      envelopesFromUser: () => [env],
+      loadMessages: async (...a: unknown[]) => { loads.push(a); return "msgs"; },
+    };
+    setRecallIndex(fake as any, { sessionMode: "per-user", userAliases: {}, operatorUsers: [] });
+    const asU1 = (start: number, end: number) => turnContext.run(
+      { origin: { interface: "slack", channel: "dm", userId: "U1" }, sessionId: "u1", scope: user("slack:U1") },
+      () => recallTool.execute!({ sessionId: "core-1", messageStart: start, messageEnd: end } as any, opts));
+    assert.equal(await asU1(5, 20), "msgs");
+    assert.deepEqual(loads.at(-1), ["core-1", 5, 10, { jsonlFallback: false }], "clamped to the indexed range, no JSONL");
+    assert.match(String(await asU1(12, 20)), /not indexed yet|not readable/);
+    setRecallIndex(null);
+  });
+});
+
+test("inbox: resolve_proposal accepts the path the inbox listing shows", async () => {
+  const { resolveProposal } = await import("../src/plugins/global-memory/inbox.js");
+  await withAgentDir(async (dir) => {
+    const file = await writeProposal(dir, { from: "slack:U1", sessionId: "u1", target: "t", change: "c", rationale: "r" });
+    assert.ok(await resolveProposal(dir, `.kern/global-inbox/${file}`, "applied", "n"));
+  });
+});
+
+test("commitMemory only: commits global memory paths and leaves the operator's staged work alone", async () => {
+  const { commitMemory, keepUsersOutOfGit } = await import("../src/plugins/global-memory/git.js");
+  await withAgentDir(async (dir) => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" });
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    await writeFile(join(dir, "AGENTS.md"), "v1\n");
+    await writeFile(join(dir, "KNOWLEDGE.md"), "index\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    await keepUsersOutOfGit(dir);
+    await writeFile(join(dir, "AGENTS.md"), "operator work in progress\n");
+    git("add", "AGENTS.md");
+    await mkdir(join(dir, "knowledge"), { recursive: true });
+    await writeFile(join(dir, "knowledge", "a.md"), "fact\n");
+    assert.match(await commitMemory(dir, ["knowledge", "notes", "KNOWLEDGE.md", "USERS.md"], "memory", { only: true }), /Committed 1 file/);
+    assert.equal(git("show", "--name-only", "--format=", "HEAD").trim(), "knowledge/a.md");
+    assert.match(git("diff", "--cached", "--name-only"), /AGENTS.md/, "operator's staged edit still staged");
+  });
+});

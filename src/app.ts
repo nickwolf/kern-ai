@@ -380,8 +380,11 @@ export async function startApp(agentDir: string, forceCli = false): Promise<void
   const envelopeChannel = (m: { channel: string; chatId?: string; isPublicChannel?: boolean }) => {
     if (!m.channel) return "";
     if (!isPerUserMode(config)) return `, ${m.channel}`;
-    const id = m.chatId && !m.channel.includes(m.chatId) ? ` (${m.chatId})` : "";
-    return `, ${m.channel}${id}${m.isPublicChannel ? ", public" : ""}`;
+    // Labels can carry user-chosen text (Discord thread names): drop the
+    // characters that delimit envelope fields so nothing can be forged.
+    const label = m.channel.replace(/[,[\]]/g, " ");
+    const id = m.chatId && !m.channel.includes(m.chatId) ? ` (${m.chatId.replace(/[,[\]]/g, " ")})` : "";
+    return `, ${label}${id}${m.isPublicChannel ? ", public" : ""}`;
   };
 
   const handleTurn = async (route: Route, msg: QueuedMessage, getPendingMessages: () => QueuedMessage[], signal: AbortSignal): Promise<string> => {

@@ -3,6 +3,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { generateText } from "ai";
 import { log } from "../../log.js";
+import { readFileNoFollow } from "../../util.js";
 import { createModel } from "../../model.js";
 import type { KernConfig } from "../../config.js";
 import type { MemoryDB } from "../../memory.js";
@@ -11,6 +12,12 @@ const SUMMARY_TYPE = "daily_notes";
 const SUMMARY_PROMPT = `Summarize the following daily notes into a brief context summary. Include: key events, decisions made, what changed, and anything unresolved. Be concise — this will be injected as context for an AI agent.`;
 
 let generating = false;
+
+// In per-user mode a sandboxed shell can write notes/, so a symlink there
+// must not pull another file into every session's prompt.
+function readNote(config: KernConfig, path: string): Promise<string> {
+  return config.sessionMode === "per-user" ? readFileNoFollow(path) : readFile(path, "utf-8");
+}
 
 // Match only YYYY-MM-DD.md files — one daily note per day, nothing else.
 const DAILY_NOTE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
@@ -49,7 +56,7 @@ function regenerateInBackground(
   (async () => {
     try {
       const contents = await Promise.all(
-        prevFiles.map(f => readFile(join(notesDir, f), "utf-8")),
+        prevFiles.map(f => readNote(config, join(notesDir, f))),
       );
       const combined = contents.join("\n\n---\n\n");
       log.debug("notes", `generating summary from ${prevFiles.length} notes (${combined.length} chars)`);
@@ -81,7 +88,7 @@ export async function regenerateNotesSummary(
   const latestFile = mdFiles[mdFiles.length - 1];
   const prevFiles = mdFiles.slice(-6, -1);
   const contents = await Promise.all(
-    prevFiles.map(f => readFile(join(notesDir, f), "utf-8")),
+    prevFiles.map(f => readNote(config, join(notesDir, f))),
   );
   const combined = contents.join("\n\n---\n\n");
   log("notes", `force-regenerating summary from ${prevFiles.length} notes (${combined.length} chars)`);
@@ -114,7 +121,7 @@ export async function loadNotesContext(
   const latestFile = mdFiles[mdFiles.length - 1];
   let latest: string | null = null;
   try {
-    const content = await readFile(join(notesDir, latestFile), "utf-8");
+    const content = await readNote(config, join(notesDir, latestFile));
     if (content.trim()) latest = content.trim();
   } catch {}
 

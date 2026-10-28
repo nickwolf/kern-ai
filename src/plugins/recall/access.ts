@@ -55,6 +55,24 @@ export function leadingEnvelope(content: string): Envelope | null {
 
 const channelId = (e: Envelope) => `${e.iface}|${e.channel}`;
 
+// Which channels a user has posted in, kept briefly: scanning every core
+// message on each recall gets slow as history grows.
+const memberCache = new Map<string, { at: number; channels: Set<string> }>();
+const MEMBER_TTL_MS = 60_000;
+
+function channelsOf(source: EnvelopeSource, key: string, aliases: Record<string, string>, coreIds: string[]): Set<string> {
+  const cached = memberCache.get(key);
+  if (cached && Date.now() - cached.at < MEMBER_TTL_MS) return cached.channels;
+  const channels = new Set<string>();
+  for (const { iface, userId } of userIdentities(key, aliases)) {
+    for (const e of source.envelopesFromUser(coreIds, userId)) {
+      if (e.iface === iface && e.userId === userId) channels.add(channelId(e));
+    }
+  }
+  memberCache.set(key, { at: Date.now(), channels });
+  return channels;
+}
+
 /**
  * Which recall hits the current turn may see, or null for no restriction.
  *
@@ -74,19 +92,15 @@ export async function recallAccess(
 ): Promise<((r: RecallRange) => boolean) | null> {
   if (config.sessionMode !== "per-user" || isOperatorTurn(config, scope, iface)) return null;
   const owners = await sessionOwners(source.agentDir);
-  // Sessions without a file (e.g. imported) predate owners: treat as core.
-  const ownerOf = (id: string) => owners.get(id) ?? "core";
+  // A session whose owner can't be told (no file, unreadable header) is
+  // readable only by the operator.
+  const ownerOf = (id: string) => owners.get(id) ?? "unknown";
   if (scope.kind === "core") return (r) => ownerOf(r.session_id) === "core";
 
   const aliases = config.userAliases ?? {};
   const isMine = (owner: string) => owner === scope.key || aliases[owner] === scope.key;
   const coreIds = [...owners].filter(([, o]) => o === "core").map(([id]) => id);
-  const memberOf = new Set<string>();
-  for (const { iface: idIface, userId } of userIdentities(scope.key, aliases)) {
-    for (const e of source.envelopesFromUser(coreIds, userId)) {
-      if (e.iface === idIface && e.userId === userId) memberOf.add(channelId(e));
-    }
-  }
+  const memberOf = channelsOf(source, scope.key, aliases, coreIds);
   return (r) => {
     const owner = ownerOf(r.session_id);
     if (isMine(owner)) return true;

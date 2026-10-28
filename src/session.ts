@@ -14,7 +14,10 @@ export interface Session {
 }
 
 /** Owner from a session file's meta header. Missing owner means core. */
-export async function readSessionOwner(path: string): Promise<string> {
+export async function readSessionOwner(path: string): Promise<string>;
+export async function readSessionOwner(path: string, strict: true): Promise<string | null>;
+/** Owner from the header; missing owner means core. `strict`: null when unreadable. */
+export async function readSessionOwner(path: string, strict = false): Promise<string | null> {
   const fh = await open(path, "r");
   try {
     const buf = Buffer.alloc(4096);
@@ -22,7 +25,7 @@ export async function readSessionOwner(path: string): Promise<string> {
     const first = buf.subarray(0, bytesRead).toString("utf-8").split("\n")[0];
     return JSON.parse(first).owner ?? "core";
   } catch {
-    return "core";
+    return strict ? null : "core";
   } finally {
     await fh.close();
   }
@@ -191,7 +194,8 @@ export class SessionManager {
       id: this.session.id,
       createdAt: this.session.createdAt,
       updatedAt: this.session.updatedAt,
-      owner: this.session.owner ?? this.owner,
+      // Core sessions keep the header they always had; no owner means core.
+      ...((this.session.owner ?? this.owner) !== "core" ? { owner: this.session.owner ?? this.owner } : {}),
     });
     const lines = [
       meta,

@@ -323,3 +323,19 @@ export function substituteEnvDeep<T>(
   }
   return value;
 }
+
+/**
+ * Read a regular file without following a symlink at `path`. Used for memory
+ * files a sandboxed shell can write: a link planted there must not make kern
+ * read another user's memory into a prompt.
+ */
+export async function readFileNoFollow(path: string): Promise<string> {
+  const { open, constants } = await import("fs/promises");
+  const fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!(await fh.stat()).isFile()) throw new Error(`${path} is not a regular file`);
+    return await fh.readFile("utf-8");
+  } finally {
+    await fh.close();
+  }
+}

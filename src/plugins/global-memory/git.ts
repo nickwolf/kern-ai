@@ -89,7 +89,7 @@ function git(agentDir: string, args: string[], timeout = 30_000) {
  * Personal memory (users/) and runtime state (.kern/) are never committed,
  * whatever else is staged. Returns a one-line outcome for the model.
  */
-export function commitMemory(agentDir: string, pathspecs: string[], message: string): Promise<string> {
+export function commitMemory(agentDir: string, pathspecs: string[], message: string, opts: { only?: boolean } = {}): Promise<string> {
   return serialized(async () => {
     if (!sameGitDirAsStartup(agentDir)) {
       return "Nothing committed: the agent directory had no git repository when kern started. The operator can create one and restart.";
@@ -100,6 +100,21 @@ export function commitMemory(agentDir: string, pathspecs: string[], message: str
       return "Not a git repository; nothing committed.";
     }
     let staged: string;
+    if (opts.only) {
+      // Commit just these paths and leave anything else staged alone. They
+      // never cover users/, so the path-limited commit can't reach it.
+      const present = pathspecs.filter((p) => existsSync(join(agentDir, p)));
+      if (!present.length) return "Nothing to commit.";
+      try {
+        await git(agentDir, ["add", "-A", "--", ...present]);
+        staged = (await git(agentDir, ["diff", "--cached", "--name-only", "--", ...present])).stdout;
+        if (!staged.trim()) return "Nothing to commit.";
+        await git(agentDir, ["commit", "-q", "--no-verify", "-m", message, "--", ...present]);
+      } catch (err: any) {
+        throw new Error(String(err.stderr || err.message).trim().split("\n").pop());
+      }
+      return pushAfterCommit(agentDir, staged);
+    }
     try {
       await git(agentDir, ["add", "-A", "--", ...pathspecs]);
       // Drop personal memory and runtime state from the index. Removals under
@@ -116,6 +131,12 @@ export function commitMemory(agentDir: string, pathspecs: string[], message: str
     } catch (err: any) {
       throw new Error(String(err.stderr || err.message).trim().split("\n").pop());
     }
+    return pushAfterCommit(agentDir, staged);
+  });
+}
+
+async function pushAfterCommit(agentDir: string, staged: string): Promise<string> {
+  {
     const files = staged.trim().split("\n").length;
 
     const { stdout: remotes } = await git(agentDir, ["remote"]);
@@ -126,5 +147,5 @@ export function commitMemory(agentDir: string, pathspecs: string[], message: str
     } catch (err: any) {
       return `Committed ${files} file(s); push failed: ${String(err.stderr || err.message).trim().split("\n").pop()}`;
     }
-  });
+  }
 }

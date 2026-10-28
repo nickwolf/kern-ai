@@ -409,7 +409,7 @@ export const kernTool = tool({
         if (paired.length > 0) {
           lines.push("Paired users:");
           for (const u of paired) {
-            lines.push(`  ${u.userId} (${u.interface}, key ${u.interface}:${u.userId}, paired ${u.pairedAt})`);
+            lines.push(`  ${u.userId} (${u.interface}, ${_config?.sessionMode === "per-user" ? `key ${u.interface}:${u.userId}, ` : ""}paired ${u.pairedAt})`);
           }
         } else {
           lines.push("No paired users.");

@@ -31,6 +31,8 @@ export interface RecallResult {
   distance: number;
 }
 
+const MAX_KNN = 4096;
+
 export class RecallIndex implements EnvelopeSource {
   private db: MemoryDB["db"];
   private embeddingModel: Parameters<typeof embed>[0]["model"];
@@ -270,7 +272,17 @@ export class RecallIndex implements EnvelopeSource {
    * Search for relevant chunks by query.
    */
   async search(query: string, limit: number = 5): Promise<RecallResult[]> {
+    return this.searchEmbedding(await this.embedQuery(query), limit);
+  }
+
+  async embedQuery(query: string): Promise<number[]> {
     const { embedding } = await embed({ model: this.embeddingModel, value: query });
+    return embedding;
+  }
+
+  /** Nearest chunks to an embedding. sqlite-vec allows at most 4096 neighbours. */
+  searchEmbedding(embedding: number[], limit: number): RecallResult[] {
+    limit = Math.min(limit, MAX_KNN);
 
     const rows = this.db.prepare(`
       SELECT
@@ -315,6 +327,12 @@ export class RecallIndex implements EnvelopeSource {
     return [...(anchor ? [anchor] : []), ...inside].map((r) => leadingEnvelope(r.content));
   }
 
+  /** How many messages of a session are indexed (messages [0, n) are in sqlite). */
+  indexedThrough(sessionId: string): number {
+    const row = this.db.prepare("SELECT last_indexed_msg FROM index_state WHERE session_id = ?").get(sessionId) as { last_indexed_msg: number } | undefined;
+    return row?.last_indexed_msg ?? 0;
+  }
+
   envelopesFromUser(sessionIds: string[], userId: string): Envelope[] {
     if (sessionIds.length === 0) return [];
     const rows = this.db.prepare(
@@ -327,7 +345,7 @@ export class RecallIndex implements EnvelopeSource {
    * Load raw messages from sqlite by session and index range.
    * Falls back to JSONL if messages aren't in sqlite yet.
    */
-  async loadMessages(sessionId: string, start: number, end: number): Promise<string> {
+  async loadMessages(sessionId: string, start: number, end: number, opts: { jsonlFallback?: boolean } = {}): Promise<string> {
     const from = Math.max(0, start);
     const to = end;
 
@@ -343,7 +361,9 @@ export class RecallIndex implements EnvelopeSource {
       }).join("\n\n");
     }
 
-    // Fallback to JSONL for messages not yet in sqlite
+    // Fallback to JSONL for messages not yet in sqlite. Only for unrestricted
+    // turns: access checks are made against what has been indexed.
+    if (opts.jsonlFallback === false) return "No indexed messages in that range yet.";
     const jsonlPath = join(this.agentDir, ".kern", "sessions", `${sessionId}.jsonl`);
     if (!existsSync(jsonlPath)) return "Session not found.";
 

@@ -93,6 +93,8 @@ export async function listPending(agentDir: string): Promise<PendingProposal[]> 
  * Returns who proposed it, or null when `file` is not a pending proposal.
  */
 export async function resolveProposal(agentDir: string, file: string, decision: string, note: string, now = new Date()): Promise<ResolvedProposal | null> {
+  // The inbox listing shows .kern/global-inbox/<file>; accept that form too.
+  file = file.replace(/^(\.\/)?\.kern\/global-inbox\//, "");
   if (file !== basename(file) || !file.endsWith(".md")) return null;
   const dir = globalInboxDir(agentDir);
   const path = join(dir, file);

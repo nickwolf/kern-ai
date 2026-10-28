@@ -38,10 +38,11 @@ export async function scopedSearch(index: RecallIndex, query: string, limit: num
   if (!canRead) return index.search(query, limit);
   // Other sessions' chunks crowd the nearest neighbours as the index grows,
   // so widen the search until enough readable hits turn up or it runs out.
-  for (let k = limit * 10; ; k *= 4) {
-    const results = await index.search(query, k);
+  const embedding = await index.embedQuery(query);
+  for (let k = Math.min(limit * 10, 4096); ; k = Math.min(k * 4, 4096)) {
+    const results = index.searchEmbedding(embedding, k);
     const readable = results.filter(canRead);
-    if (readable.length >= limit || results.length < k || k >= 4000) return readable.slice(0, limit);
+    if (readable.length >= limit || results.length < k || k >= 4096) return readable.slice(0, limit);
   }
 }
 
@@ -90,10 +91,14 @@ export const recallTool = tool({
       if (args.sessionId && args.messageStart !== undefined && args.messageEnd !== undefined) {
         const turn = currentTurn();
         const canRead = await recallAccess(_recallIndex, turn?.scope ?? CORE_SCOPE, _config, turn?.origin.interface);
-        if (canRead && !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: args.messageEnd })) {
-          return "Those messages are not readable from this session (another user's conversation, or a channel this user is not in).";
+        if (!canRead) return await _recallIndex.loadMessages(args.sessionId, args.messageStart, args.messageEnd);
+        // Restricted turns: only indexed messages, since the channel check
+        // only knows about those.
+        const end = Math.min(args.messageEnd, _recallIndex.indexedThrough(args.sessionId));
+        if (end <= args.messageStart || !canRead({ session_id: args.sessionId, msg_start: args.messageStart, msg_end: end })) {
+          return "Those messages are not readable from this session (another user's conversation, a channel this user is not in, or not indexed yet).";
         }
-        return await _recallIndex.loadMessages(args.sessionId, args.messageStart, args.messageEnd);
+        return await _recallIndex.loadMessages(args.sessionId, args.messageStart, end, { jsonlFallback: false });
       }
 
       // Search mode

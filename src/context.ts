@@ -3,6 +3,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { log } from "./log.js";
+import { readFileNoFollow } from "./util.js";
 import { getToolsForScope, SHELL_PLUGIN_TOOLS, type KernConfig, type ToolScope } from "./config.js";
 import type { SegmentIndex } from "./segments.js";
 import { CORE_SCOPE, type SessionScope } from "./turn-context.js";
@@ -71,7 +72,8 @@ export async function loadSystemPrompt(
   if (instructions && scope.kind === "user") {
     const personalIndex = join(userMemoryDir(agentDir, scope.key), "KNOWLEDGE.md");
     if (existsSync(personalIndex)) {
-      parts.push(wrapDocument(`${userMemoryRelPath(scope.key)}/KNOWLEDGE.md`, await readFile(personalIndex, "utf-8")));
+      const content = await readFileNoFollow(personalIndex).catch(() => null);
+      if (content !== null) parts.push(wrapDocument(`${userMemoryRelPath(scope.key)}/KNOWLEDGE.md`, content));
     }
   }
 

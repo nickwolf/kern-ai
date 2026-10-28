@@ -112,10 +112,20 @@ function reviewsInbox(ctx: PluginContext): boolean {
 }
 
 /**
- * What the core commits: global memory, never runtime state. Personal memory
- * (users/) is gitignored, and commitMemory never commits it either way.
+ * What the core commits: the operator's turns commit the agent dir except
+ * runtime state; other turns commit only global memory, leaving the
+ * operator's own uncommitted or staged work alone. Personal memory (users/)
+ * is never committed either way.
  */
 const CORE_PATHSPECS = [".", ":(exclude).kern"];
+const GLOBAL_MEMORY_PATHS = ["knowledge", "notes", "KNOWLEDGE.md", "USERS.md"];
+
+function commitFromTurn(ctx: PluginContext, message: string): Promise<string> {
+  const operator = isOperatorTurn(ctx.config, ctx.scope(), ctx.origin()?.interface);
+  return operator
+    ? commitMemory(ctx.agentDir, CORE_PATHSPECS, message)
+    : commitMemory(ctx.agentDir, GLOBAL_MEMORY_PATHS, message, { only: true });
+}
 
 export const resolveProposalTool = tool({
   description: [
@@ -134,7 +144,7 @@ export const resolveProposalTool = tool({
     const resolved = await resolveProposal(_ctx.agentDir, file, decision, note);
     if (!resolved) return `No pending proposal named ${file} in .kern/global-inbox/.`;
     log("global-memory", `proposal ${file} from ${resolved.from} ${decision}`);
-    const committed = await commitMemory(_ctx.agentDir, CORE_PATHSPECS, `global memory: ${decision} proposal from ${resolved.from}: ${note.trim().slice(0, 72)}`)
+    const committed = await commitFromTurn(_ctx, `global memory: ${decision} proposal from ${resolved.from}: ${note.trim().slice(0, 72)}`)
       .catch((err) => `Commit failed: ${err.message}`);
 
     // Tell the proposer's session how it went. Not awaited: that session's
@@ -166,7 +176,7 @@ export const commitMemoryTool = tool({
     if (_ctx.scope().kind === "user") {
       return "Nothing to do: personal memory is saved on disk as soon as you write it, and is kept out of git so it stays private.";
     }
-    return commitMemory(_ctx.agentDir, CORE_PATHSPECS, message).catch((err) => `Commit failed: ${err.message}`);
+    return commitFromTurn(_ctx, message).catch((err) => `Commit failed: ${err.message}`);
   },
 });
 

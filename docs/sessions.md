@@ -43,7 +43,7 @@ users/<user>/KNOWLEDGE.md  users/<user>/knowledge/  users/<user>/notes/   # pers
 
 `<user>` is the user key made filesystem-safe plus a short hash, e.g. `users/slack_U0123-1a2b3c4d/`.
 
-**Global memory** (`KNOWLEDGE.md`, `knowledge/`, `notes/`, `USERS.md`) is written only by the core session, and every session reads it. The core is told to record only what came from `public` channels or approved proposals, and to keep `USERS.md` to names and roles. The system prompt is rebuilt each turn, so a DM session sees the core's latest edits on its next turn. The core commits global memory with `commit_memory`, which leaves out `users/` and `.kern/`.
+**Global memory** (`KNOWLEDGE.md`, `knowledge/`, `notes/`, `USERS.md`) is written only by the core session, and every session reads it. The core is told to record only what came from `public` channels or approved proposals, and to keep `USERS.md` to names and roles. The system prompt is rebuilt each turn, so a DM session sees the core's latest edits on its next turn. The core commits global memory with `commit_memory`, which leaves out `users/` and `.kern/`. From group-channel and automatic turns it commits only `knowledge/`, `notes/`, `KNOWLEDGE.md` and `USERS.md`, leaving the operator's own uncommitted work alone. It only commits to a repository that existed when kern started.
 
 **Personal memory** belongs to one user's DM session. That session's system prompt includes `users/<user>/KNOWLEDGE.md` and the latest note in `users/<user>/notes/`. It is saved on disk as soon as it's written, and it is never committed to git: per-user mode adds `users/` to `.gitignore` and stops tracking anything committed there before. Back up the machine (`kern backup`) to keep it.
 

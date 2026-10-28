@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { shellExec, argvExec, formatShellResult } from "../../tools/shell.js";
-import { isOperatorTurn } from "../../config.js";
+import { isOperatorTurn, OPERATOR_INTERFACES } from "../../config.js";
 import { sandboxArgv, sandboxedShellEnabled } from "../../sandbox.js";
 import { CORE_KEY } from "../../session-router.js";
 import type { PluginContext } from "../types.js";
@@ -32,10 +32,15 @@ function sandboxScope() {
   return _ctx.scope();
 }
 
-/** Whether the current turn may see a job: the operator sees all, others only their session's. */
-function isOwnJob(origin: { sessionKey?: string } | null | undefined): boolean {
+/**
+ * Whether the current turn may see a job: the operator sees all; other turns
+ * see only untrusted jobs of their own session. Jobs the operator started
+ * (unsandboxed) and records from before per-user mode are the operator's.
+ */
+function isOwnJob(origin: { sessionKey?: string; interface?: string; userId?: string } | null | undefined): boolean {
   if (!sandboxScope()) return true;
-  return (origin?.sessionKey ?? CORE_KEY) === (_ctx?.origin()?.sessionKey ?? CORE_KEY);
+  if (!origin?.sessionKey || origin.sessionKey !== (_ctx?.origin()?.sessionKey ?? CORE_KEY)) return false;
+  return origin.sessionKey !== CORE_KEY || !OPERATOR_INTERFACES.includes(origin.interface ?? "");
 }
 
 export const bashTool = tool({

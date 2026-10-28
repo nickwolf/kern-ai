@@ -343,12 +343,14 @@ export async function sessionOwners(agentDir: string): Promise<Map<string, strin
   for (const f of await readdir(dir)) {
     if (!f.endsWith(".jsonl") || f.endsWith(".media.jsonl")) continue;
     const id = f.slice(0, -".jsonl".length);
-    let owner = ownerCache.get(id);
+    let owner: string | null | undefined = ownerCache.get(id);
     if (owner === undefined) {
-      owner = await readSessionOwner(join(dir, f));
-      ownerCache.set(id, owner);
+      // A header that can't be read (e.g. mid-write) isn't cached, and the
+      // session counts as nobody's until it can be read.
+      owner = await readSessionOwner(join(dir, f), true);
+      if (owner !== null) ownerCache.set(id, owner);
     }
-    owners.set(id, owner);
+    owners.set(id, owner ?? "unknown");
   }
   return owners;
 }
