@@ -37,20 +37,15 @@ export function quote(text: string): string {
 export type StopReason = Exclude<NarrationReason, "wyd">;
 
 /**
- * Reply options shown when a turn stops early. Any reply resumes with full history,
+ * Reply hint shown when a turn stops early. Any reply resumes with full history,
  * so lead with context and redirection; "continue" alone undersells it.
  */
 export function continuationHint(reason: StopReason): string {
-  const resume = reason === "timeout" ? "Pick up where I left off" : "Keep going with the same approach";
-  return [
-    "Reply with:",
-    "- More context: details, links, or where to look",
-    "- A different direction: change the approach or narrow the goal",
-    `- "continue": ${resume}`,
-  ].join("\n");
+  const resume = reason === "timeout" ? "resume" : "keep going";
+  return `Reply with more context, a different direction, or "continue" to ${resume}.`;
 }
 
-/** Full step-limit / timeout notice: header, optional quoted status, reply options. */
+/** Full step-limit / timeout notice: header, optional quoted status, reply hint. */
 export function formatStopNotice(reason: StopReason, maxSteps: number, status?: string): string {
   const header = reason === "timeout"
     ? "⏱️ Idle timeout reached."

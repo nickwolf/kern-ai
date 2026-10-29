@@ -62,11 +62,10 @@ test("step limit notice pluralizes correctly", () => {
 
 test("continuation hint offers context and redirection before \"continue\"", () => {
   for (const reason of ["step_limit", "timeout"] as const) {
-    const lines = continuationHint(reason).split("\n");
-    assert.match(lines[1], /^- More context/);
-    assert.match(lines[2], /^- A different direction/);
-    assert.match(lines[3], /^- "continue"/);
-    assert.equal(lines.length, 4);
+    const hint = continuationHint(reason);
+    assert.doesNotMatch(hint, /\n/);
+    assert.ok(hint.indexOf("more context") < hint.indexOf("a different direction"));
+    assert.ok(hint.indexOf("a different direction") < hint.indexOf('"continue"'));
   }
 });
 
